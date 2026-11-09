@@ -3,6 +3,17 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file("keystore.properties")
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def releaseStoreFile = System.getenv("MEMORYLINK_STORE_FILE") ?: keystoreProps.getProperty("storeFile")
+def releaseStorePassword = System.getenv("MEMORYLINK_STORE_PASSWORD") ?: keystoreProps.getProperty("storePassword")
+def releaseKeyAlias = System.getenv("MEMORYLINK_KEY_ALIAS") ?: keystoreProps.getProperty("keyAlias")
+def releaseKeyPassword = System.getenv("MEMORYLINK_KEY_PASSWORD") ?: keystoreProps.getProperty("keyPassword")
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace 'com.memorylink.photoframe'
     compileSdk 34
@@ -11,14 +22,29 @@ android {
         applicationId "com.memorylink.photoframe"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // Bump versionCode before building an APK you intend to push to the frame.
+        versionCode 2
+        versionName "1.1"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

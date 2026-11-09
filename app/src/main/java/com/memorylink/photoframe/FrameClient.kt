@@ -1,8 +1,7 @@
 package com.memorylink.photoframe
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -13,25 +12,49 @@ data class ImageRef(val id: Long, val url: String) {
     }
 }
 
+/** An APK the server has been told to push to the frame. */
+data class UpdateRef(
+    val id: Long,
+    val url: String,
+    val name: String?,
+    val sha256: String?,
+    val size: Long,
+) {
+    companion object {
+        fun fromJson(o: JSONObject) = UpdateRef(
+            id = o.optLong("id"),
+            url = o.getString("url"),
+            name = if (o.isNull("name")) null else o.optString("name"),
+            sha256 = if (o.isNull("sha256")) null else o.optString("sha256"),
+            size = o.optLong("size", -1L),
+        )
+    }
+}
+
 /** Parsed response of GET /api/frame/current. */
 data class FrameState(
     val mode: String,
     val version: Long,
     val intervalSeconds: Int,
+    val random: Boolean,
     val single: ImageRef?,
     val images: List<ImageRef>,
+    val update: UpdateRef?,
 ) {
     companion object {
         fun fromJson(o: JSONObject): FrameState {
             val single = if (!o.isNull("image")) ImageRef.fromJson(o.getJSONObject("image")) else null
+            val update = if (o.isNull("update")) null else UpdateRef.fromJson(o.getJSONObject("update"))
             val arr = o.getJSONArray("images")
             val images = (0 until arr.length()).map { ImageRef.fromJson(arr.getJSONObject(it)) }
             return FrameState(
                 mode = o.optString("mode", "slideshow"),
                 version = o.optLong("version", 0),
                 intervalSeconds = o.optInt("interval_seconds", 30),
+                random = o.optBoolean("random", false),
                 single = single,
                 images = images,
+                update = update,
             )
         }
     }
@@ -52,18 +75,45 @@ class FrameClient(private val baseUrl: String) {
     }
 
     /**
-     * Decode the image straight from the HTTP stream instead of reading the
-     * whole response into a byte array first: on the frame's small heap the
-     * extra copy could push an otherwise valid image over the limit.
+     * Stream the file straight to [dest], avoiding a full copy in memory.
+     * The file only appears once the download completed.
      */
-    fun downloadImage(path: String): Bitmap {
+    fun downloadFile(path: String, dest: File) {
         val conn = open(path)
-        return try {
+        try {
             check(conn)
-            conn.inputStream.buffered().use { stream ->
-                BitmapFactory.decodeStream(stream)
-                    ?: throw java.io.IOException("undecodable image")
+            dest.parentFile?.mkdirs()
+            val tmp = File(dest.path + ".part")
+            var stored = false
+            try {
+                conn.inputStream.use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output) }
+                }
+                dest.delete()
+                if (!tmp.renameTo(dest)) {
+                    throw java.io.IOException("could not store file")
+                }
+                stored = true
+            } finally {
+                if (!stored) tmp.delete()
             }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Best-effort notification of the image the frame is actually showing. */
+    fun reportShown(imageId: Long) {
+        val conn = open("/api/frame/shown")
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { out ->
+                out.write("{\"image_id\":$imageId}".toByteArray(Charsets.UTF_8))
+            }
+            check(conn)
+            conn.inputStream.use { it.readBytes() }
         } finally {
             conn.disconnect()
         }

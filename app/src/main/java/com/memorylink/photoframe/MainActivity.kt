@@ -1,9 +1,16 @@
 package com.memorylink.photoframe
 
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.LruCache
 import android.view.View
 import android.view.WindowManager
@@ -11,6 +18,10 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
+import java.io.File
+import java.math.BigInteger
+import java.security.MessageDigest
+import java.util.Random
 
 /**
  * The photoframe. First launch (or long-press on the frame) shows a single
@@ -36,6 +47,12 @@ class MainActivity : Activity() {
     // (a full 1080x1920 bitmap alone is ~8 MB).
     private val bitmapCache = LruCache<String, Bitmap>(2)
     private var currentUrl: String? = null
+
+    // Downloaded originals are kept on disk so they survive restarts and
+    // slideshow intervals do not refetch them from the server.
+    private val imageDir by lazy { File(cacheDir, "images").apply { mkdirs() } }
+    private val random = Random()
+    private var permissionPromptedFor = 0L
 
     private val prefs by lazy { getSharedPreferences("memorylink", MODE_PRIVATE) }
 
@@ -101,30 +118,43 @@ class MainActivity : Activity() {
 
     private fun frameLoop() {
         var lastVersion = -1L
-        var slideStart = SystemClock.elapsedRealtime()
+        var nextSlideAt = 0L
         var images: List<ImageRef> = emptyList()
+        var lastUrl: String? = null
+        var nextIndex = 0
 
         while (running) {
             try {
                 val state = client!!.fetchState()
-                if (state.mode == "single" && state.single != null) {
-                    showImage(state.single.url)
+                clearStatus()
+                state.update?.let { maybeInstallUpdate(it) }
+                val single = state.single
+                if (state.mode == "single" && single != null) {
+                    if (showImage(single)) lastUrl = single.url
                 } else {
                     if (state.version != lastVersion) {
                         images = state.images
                         lastVersion = state.version
-                        slideStart = SystemClock.elapsedRealtime()
+                        lastUrl = null
+                        nextIndex = 0
+                        nextSlideAt = 0L
                     }
                     if (images.isEmpty()) {
                         showPlaceholder()
-                    } else {
-                        val interval = state.intervalSeconds.coerceAtLeast(5)
-                        val idx = (((SystemClock.elapsedRealtime() - slideStart) /
-                            (interval * 1000L)) % images.size).toInt()
-                        showImage(images[idx].url)
+                    } else if (SystemClock.elapsedRealtime() >= nextSlideAt) {
+                        val next = if (state.random) {
+                            randomImage(images, lastUrl)
+                        } else {
+                            images[nextIndex]
+                        }
+                        if (showImage(next)) {
+                            lastUrl = next.url
+                            if (!state.random) nextIndex = (nextIndex + 1) % images.size
+                            val interval = state.intervalSeconds.coerceAtLeast(5)
+                            nextSlideAt = SystemClock.elapsedRealtime() + interval * 1000L
+                        }
                     }
                 }
-                clearStatus()
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
@@ -139,17 +169,126 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showImage(url: String) {
-        if (url == currentUrl) return
+    /**
+     * Pick a random image from the current set. Every image has the same
+     * chance, except the one already on screen, so the slideshow does not
+     * show the same picture twice in a row.
+     */
+    private fun randomImage(images: List<ImageRef>, avoidUrl: String?): ImageRef {
+        if (images.size == 1) return images[0]
+        val candidates = if (avoidUrl == null) images else images.filter { it.url != avoidUrl }
+        return if (candidates.isEmpty()) images[random.nextInt(images.size)]
+        else candidates[random.nextInt(candidates.size)]
+    }
+
+    private fun showImage(ref: ImageRef): Boolean {
+        if (ref.url == currentUrl) return true
         try {
-            val bmp = bitmapCache.get(url) ?: client!!.downloadImage(url).also {
-                bitmapCache.put(url, it)
+            val bmp = bitmapCache.get(ref.url) ?: loadBitmap(ref).also {
+                bitmapCache.put(ref.url, it)
             }
-            currentUrl = url
+            currentUrl = ref.url
             runOnUiThread { frameView.setImageBitmap(bmp) }
+            try {
+                client!!.reportShown(ref.id)
+            } catch (e: Exception) {
+                // Reporting is best effort; keep showing the picture.
+            }
+            return true
         } catch (e: Exception) {
             setStatus("Could not load image: ${e.message}")
+            return false
         }
+    }
+
+    private fun loadBitmap(ref: ImageRef): Bitmap {
+        val file = imageFile(ref.url)
+        if (file.isFile && file.length() > 0) {
+            BitmapFactory.decodeFile(file.path)?.let { return it }
+            file.delete() // corrupt cached copy: fetch it again
+        }
+        client!!.downloadFile(ref.url, file)
+        return BitmapFactory.decodeFile(file.path)
+            ?: throw java.io.IOException("undecodable image")
+    }
+
+    private fun imageFile(url: String): File {
+        val name = url.substringBefore('?').substringAfterLast('/')
+        val safe = name.isNotEmpty() && name != "." && name != ".." &&
+            name.all { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' }
+        return File(imageDir, if (safe) name else "img-" + url.hashCode())
+    }
+
+    /**
+     * Download a pushed APK and hand it to the system installer. Android shows
+     * a confirmation dialog; the updated app is started by UpdateReceiver.
+     */
+    private fun maybeInstallUpdate(update: UpdateRef) {
+        if (update.id <= prefs.getLong(PREF_HANDLED_UPDATE, 0L)) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            if (permissionPromptedFor == update.id) return
+            permissionPromptedFor = update.id
+            setStatus("Allow installs for MemoryLink; the update will continue")
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                    .setData(Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            return
+        }
+
+        try {
+            setStatus("Downloading update…")
+            val file = File(cacheDir, UPDATE_FILE)
+            client!!.downloadFile(update.url, file)
+            val expected = update.sha256
+            if (!expected.isNullOrBlank() && !sha256(file).equals(expected, ignoreCase = true)) {
+                file.delete()
+                throw java.io.IOException("checksum mismatch")
+            }
+            prefs.edit().putLong(PREF_HANDLED_UPDATE, update.id).commit()
+            installApk(file)
+            setStatus("Update ready — confirm the install on the frame")
+        } catch (e: Exception) {
+            setStatus("Update failed: ${e.message}")
+        }
+    }
+
+    private fun installApk(file: File) {
+        val installer = packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        params.setAppPackageName(packageName)
+        val sessionId = installer.createSession(params)
+        val session = installer.openSession(sessionId)
+        try {
+            session.openWrite("memorylink.apk", 0, file.length()).use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+                session.fsync(out)
+            }
+            val intent = Intent(this, InstallResultReceiver::class.java)
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+            val pending = PendingIntent.getBroadcast(this, sessionId, intent, flags)
+            session.commit(pending.intentSender)
+        } finally {
+            session.close()
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return BigInteger(1, digest.digest()).toString(16).padStart(64, '0')
     }
 
     private fun showPlaceholder() {
@@ -196,5 +335,7 @@ class MainActivity : Activity() {
     companion object {
         private const val POLL_MS = 6000L
         private const val PLACEHOLDER = "\u0000placeholder"
+        private const val UPDATE_FILE = "update.apk"
+        private const val PREF_HANDLED_UPDATE = "handled_update_id"
     }
 }
