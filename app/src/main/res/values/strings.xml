@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MemoryLink Frame</string>
+    <string name="config_prompt">Enter the HTTPS URL of your MemoryLink server</string>
+    <string name="hint_url">https://your-server.example.com</string>
+    <string name="connect">Connect</string>
+    <string name="frame_image_desc">Frame image</string>
+</resources>
