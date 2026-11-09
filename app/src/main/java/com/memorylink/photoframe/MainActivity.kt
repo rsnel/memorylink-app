@@ -2,9 +2,9 @@ package com.memorylink.photoframe
 
 import android.app.Activity
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.LruCache
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -31,7 +31,10 @@ class MainActivity : Activity() {
     @Volatile
     private var running = false
 
-    private val bitmapCache = HashMap<String, Bitmap>()
+    // Keep at most two decoded frames. The frame only ever displays one image
+    // at a time, and this device's heap is too small to hold the whole library
+    // (a full 1080x1920 bitmap alone is ~8 MB).
+    private val bitmapCache = LruCache<String, Bitmap>(2)
     private var currentUrl: String? = null
 
     private val prefs by lazy { getSharedPreferences("memorylink", MODE_PRIVATE) }
@@ -139,12 +142,9 @@ class MainActivity : Activity() {
     private fun showImage(url: String) {
         if (url == currentUrl) return
         try {
-            val bmp = bitmapCache[url] ?: run {
-                val bytes = client!!.downloadImage(url)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    ?: throw java.io.IOException("undecodable image")
+            val bmp = bitmapCache.get(url) ?: client!!.downloadImage(url).also {
+                bitmapCache.put(url, it)
             }
-            bitmapCache[url] = bmp
             currentUrl = url
             runOnUiThread { frameView.setImageBitmap(bmp) }
         } catch (e: Exception) {

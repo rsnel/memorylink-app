@@ -1,5 +1,7 @@
 package com.memorylink.photoframe
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -49,11 +51,19 @@ class FrameClient(private val baseUrl: String) {
         }
     }
 
-    fun downloadImage(path: String): ByteArray {
+    /**
+     * Decode the image straight from the HTTP stream instead of reading the
+     * whole response into a byte array first: on the frame's small heap the
+     * extra copy could push an otherwise valid image over the limit.
+     */
+    fun downloadImage(path: String): Bitmap {
         val conn = open(path)
         return try {
             check(conn)
-            conn.inputStream.readBytes()
+            conn.inputStream.buffered().use { stream ->
+                BitmapFactory.decodeStream(stream)
+                    ?: throw java.io.IOException("undecodable image")
+            }
         } finally {
             conn.disconnect()
         }
