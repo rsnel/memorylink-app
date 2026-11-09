@@ -12,6 +12,16 @@
         android:contentDescription="@string/frame_image_desc"
         android:visibility="gone" />
 
+    <ImageView
+        android:id="@+id/frameViewNext"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:scaleType="fitCenter"
+        android:contentDescription="@string/frame_image_desc"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/configView"
         android:layout_width="match_parent"

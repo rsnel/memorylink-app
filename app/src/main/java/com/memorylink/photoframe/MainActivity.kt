@@ -14,6 +14,8 @@ import android.provider.Settings
 import android.util.LruCache
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -31,6 +33,7 @@ import java.util.Random
 class MainActivity : Activity() {
 
     private lateinit var frameView: ImageView
+    private lateinit var nextFrameView: ImageView
     private lateinit var configView: View
     private lateinit var urlInput: EditText
     private lateinit var connectBtn: Button
@@ -61,6 +64,7 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
 
         frameView = findViewById(R.id.frameView)
+        nextFrameView = findViewById(R.id.frameViewNext)
         configView = findViewById(R.id.configView)
         urlInput = findViewById(R.id.urlInput)
         connectBtn = findViewById(R.id.connectBtn)
@@ -90,6 +94,7 @@ class MainActivity : Activity() {
     }
 
     private fun showConfig() {
+        resetNextFrame()
         frameView.visibility = View.GONE
         configView.visibility = View.VISIBLE
         statusView.visibility = View.GONE
@@ -101,6 +106,7 @@ class MainActivity : Activity() {
     private fun startFrame(url: String) {
         configView.visibility = View.GONE
         statusView.visibility = View.GONE
+        resetNextFrame()
         frameView.visibility = View.VISIBLE
         hideSystemBars(true)
         currentUrl = null
@@ -188,7 +194,7 @@ class MainActivity : Activity() {
                 bitmapCache.put(ref.url, it)
             }
             currentUrl = ref.url
-            runOnUiThread { frameView.setImageBitmap(bmp) }
+            runOnUiThread { transitionTo(bmp) }
             try {
                 client!!.reportShown(ref.id)
             } catch (e: Exception) {
@@ -294,7 +300,84 @@ class MainActivity : Activity() {
     private fun showPlaceholder() {
         if (currentUrl == PLACEHOLDER) return
         currentUrl = PLACEHOLDER
-        runOnUiThread { frameView.setImageBitmap(null) }
+        runOnUiThread {
+            resetNextFrame()
+            frameView.setImageBitmap(null)
+        }
+    }
+
+    private enum class Transition {
+        DISSOLVE, SLIDE_LEFT, SLIDE_RIGHT, SLIDE_UP, SLIDE_DOWN, ZOOM_IN, ZOOM_OUT,
+    }
+
+    /** Animate the new bitmap in over the old one with a random effect. */
+    private fun transitionTo(bmp: Bitmap) {
+        resetNextFrame()
+        nextFrameView.setImageBitmap(bmp)
+        nextFrameView.visibility = View.VISIBLE
+
+        val kinds = Transition.values()
+        val kind = kinds[random.nextInt(kinds.size)]
+        val duration = 550L + random.nextInt(450)
+        val width = (if (frameView.width > 0) frameView.width
+            else resources.displayMetrics.widthPixels).toFloat()
+        val height = (if (frameView.height > 0) frameView.height
+            else resources.displayMetrics.heightPixels).toFloat()
+
+        val animator = nextFrameView.animate().setDuration(duration)
+        when (kind) {
+            Transition.DISSOLVE -> {
+                nextFrameView.alpha = 0f
+                animator.alpha(1f).setInterpolator(AccelerateDecelerateInterpolator())
+            }
+            Transition.SLIDE_LEFT -> {
+                nextFrameView.translationX = width
+                animator.translationX(0f).setInterpolator(DecelerateInterpolator())
+            }
+            Transition.SLIDE_RIGHT -> {
+                nextFrameView.translationX = -width
+                animator.translationX(0f).setInterpolator(DecelerateInterpolator())
+            }
+            Transition.SLIDE_UP -> {
+                nextFrameView.translationY = height
+                animator.translationY(0f).setInterpolator(DecelerateInterpolator())
+            }
+            Transition.SLIDE_DOWN -> {
+                nextFrameView.translationY = -height
+                animator.translationY(0f).setInterpolator(DecelerateInterpolator())
+            }
+            Transition.ZOOM_IN -> {
+                nextFrameView.scaleX = 1.18f
+                nextFrameView.scaleY = 1.18f
+                nextFrameView.alpha = 0f
+                animator.scaleX(1f).scaleY(1f).alpha(1f)
+                    .setInterpolator(DecelerateInterpolator())
+            }
+            Transition.ZOOM_OUT -> {
+                nextFrameView.scaleX = 0.82f
+                nextFrameView.scaleY = 0.82f
+                nextFrameView.alpha = 0f
+                animator.scaleX(1f).scaleY(1f).alpha(1f)
+                    .setInterpolator(DecelerateInterpolator())
+            }
+        }
+        animator.withEndAction { finishTransition(bmp) }
+    }
+
+    private fun finishTransition(bmp: Bitmap) {
+        frameView.setImageBitmap(bmp)
+        resetNextFrame()
+    }
+
+    private fun resetNextFrame() {
+        nextFrameView.animate().cancel()
+        nextFrameView.alpha = 1f
+        nextFrameView.translationX = 0f
+        nextFrameView.translationY = 0f
+        nextFrameView.scaleX = 1f
+        nextFrameView.scaleY = 1f
+        nextFrameView.setImageDrawable(null)
+        nextFrameView.visibility = View.GONE
     }
 
     private fun setStatus(msg: String) {
