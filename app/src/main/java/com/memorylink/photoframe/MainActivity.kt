@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var urlInput: EditText
     private lateinit var connectBtn: Button
     private lateinit var statusView: TextView
+    private lateinit var splashView: ImageView
 
     private var client: FrameClient? = null
     private var frameThread: Thread? = null
@@ -69,6 +70,19 @@ class MainActivity : Activity() {
         urlInput = findViewById(R.id.urlInput)
         connectBtn = findViewById(R.id.connectBtn)
         statusView = findViewById(R.id.statusView)
+        splashView = findViewById(R.id.splashView)
+
+        // Show the splash briefly, then fade it away over whatever is behind it.
+        splashView.postDelayed({
+            splashView.animate()
+                .alpha(0f)
+                .setDuration(450)
+                .withEndAction {
+                    splashView.visibility = View.GONE
+                    // Release the full-screen splash bitmap after the fade.
+                    splashView.setImageDrawable(null)
+                }
+        }, 1200L)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 

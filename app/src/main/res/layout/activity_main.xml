@@ -76,4 +76,14 @@
         android:padding="8dp"
         android:visibility="gone" />
 
+    <ImageView
+        android:id="@+id/splashView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/ic_launcher_background"
+        android:scaleType="centerCrop"
+        android:src="@drawable/splash"
+        android:contentDescription="@string/app_name"
+        android:importantForAccessibility="no" />
+
 </FrameLayout>
