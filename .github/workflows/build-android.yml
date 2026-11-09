@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # The secrets context cannot be used in step-level `if` conditions, so
+      # expose a boolean via the environment and test that instead.
+      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,7 +26,7 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Restore release keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_RELEASE_KEY == 'true'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -35,15 +39,15 @@ jobs:
           EOF
 
       - name: Build signed release APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_RELEASE_KEY == 'true'
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Build debug APK (no signing secrets configured)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: env.HAS_RELEASE_KEY != 'true'
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload release APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_RELEASE_KEY == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: app-release
@@ -51,7 +55,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload debug APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: env.HAS_RELEASE_KEY != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: app-debug

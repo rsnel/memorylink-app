@@ -1,5 +1,7 @@
 package com.memorylink.photoframe
 
+import android.net.Uri
+import android.util.Base64
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -61,7 +63,31 @@ data class FrameState(
 }
 
 /** Minimal HTTP client for the MemoryLink server. No external dependencies. */
-class FrameClient(private val baseUrl: String) {
+class FrameClient(baseUrl: String) {
+
+    // Credentials may be embedded in the configured URL; strip them from the
+    // request URL and send them as a normal HTTP Basic Authorization header.
+    private val base: String
+    private val authHeader: String?
+
+    init {
+        val parsed = Uri.parse(baseUrl.trimEnd('/'))
+        authHeader = parsed.userInfo?.let { info ->
+            val userPass = if (info.contains(':')) info else "$info:"
+            "Basic " + Base64.encodeToString(
+                userPass.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP,
+            )
+        }
+        // Rebuild the base URL without the user info part.
+        val hostAndPort = parsed.encodedAuthority.orEmpty().substringAfterLast('@')
+        val clean = Uri.Builder()
+            .scheme(parsed.scheme)
+            .encodedAuthority(hostAndPort)
+        parsed.encodedPath?.let { clean.encodedPath(it) }
+        parsed.encodedQuery?.let { clean.encodedQuery(it) }
+        base = clean.build().toString().trimEnd('/')
+    }
 
     fun fetchState(): FrameState {
         val conn = open("/api/frame/current")
@@ -120,11 +146,12 @@ class FrameClient(private val baseUrl: String) {
     }
 
     private fun open(path: String): HttpURLConnection {
-        val url = URL(baseUrl.trimEnd('/') + path)
+        val url = URL(base + path)
         val conn = url.openConnection() as HttpURLConnection
         conn.connectTimeout = 8000
         conn.readTimeout = 20000
         conn.requestMethod = "GET"
+        authHeader?.let { conn.setRequestProperty("Authorization", it) }
         return conn
     }
 
