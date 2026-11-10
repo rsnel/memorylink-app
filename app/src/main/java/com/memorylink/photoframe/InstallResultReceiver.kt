@@ -16,6 +16,37 @@ class InstallResultReceiver : BroadcastReceiver() {
         )
         val updateId = intent.getLongExtra(EXTRA_UPDATE_ID, -1L)
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+
+        // The installer asks us to show its confirmation dialog before it can
+        // continue. This is the activity we must launch; it is NOT a failure.
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            @Suppress("DEPRECATION")
+            val confirmation = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            if (confirmation == null) {
+                report(
+                    context,
+                    updateId,
+                    "failed",
+                    "installer requested user action without a confirmation intent",
+                )
+                return
+            }
+            try {
+                Log.i("MemoryLink", "launching install confirmation update=$updateId")
+                context.startActivity(
+                    confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e: Exception) {
+                report(
+                    context,
+                    updateId,
+                    "failed",
+                    "could not launch installer: ${e.message ?: e.javaClass.simpleName}",
+                )
+            }
+            return
+        }
+
         val result = when (status) {
             PackageInstaller.STATUS_SUCCESS -> "installed"
             PackageInstaller.STATUS_FAILURE_ABORTED -> "canceled"
@@ -35,7 +66,10 @@ class InstallResultReceiver : BroadcastReceiver() {
         val detail = "PackageInstaller $statusName" +
             if (!message.isNullOrBlank()) ": $message" else ""
         Log.w("MemoryLink", "install result update=$updateId status=$statusName message=$message")
+        report(context, updateId, result, detail)
+    }
 
+    private fun report(context: Context, updateId: Long, result: String, detail: String) {
         if (result == "failed") {
             Toast.makeText(context, detail, Toast.LENGTH_LONG).show()
         }
