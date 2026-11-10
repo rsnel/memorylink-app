@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.LruCache
@@ -39,6 +40,7 @@ class MainActivity : Activity() {
     private lateinit var connectBtn: Button
     private lateinit var statusView: TextView
     private lateinit var splashView: ImageView
+    private lateinit var pidView: TextView
 
     private var client: FrameClient? = null
     private var frameThread: Thread? = null
@@ -74,6 +76,8 @@ class MainActivity : Activity() {
         connectBtn = findViewById(R.id.connectBtn)
         statusView = findViewById(R.id.statusView)
         splashView = findViewById(R.id.splashView)
+        pidView = findViewById(R.id.pidView)
+        pidView.text = "PID: ${Process.myPid()}"
 
         // Show the splash briefly, then fade it away over whatever is behind it.
         splashView.postDelayed({
@@ -85,7 +89,7 @@ class MainActivity : Activity() {
                     // Release the full-screen splash bitmap after the fade.
                     splashView.setImageDrawable(null)
                 }
-        }, 1200L)
+        }, 3200L)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
@@ -145,11 +149,24 @@ class MainActivity : Activity() {
         var images: List<ImageRef> = emptyList()
         var lastUrl: String? = null
         var nextIndex = 0
+        var stateVersion = -1L
+        var stateUpdateId = 0L
+        var pendingState: FrameState? = null
+        var waitSeconds = LONGPOLL_SECONDS
 
         while (running) {
             try {
-                val state = client!!.fetchState()
+                val state = pendingState ?: client!!.fetchState()
+                pendingState = null
+                stateVersion = state.version
+                stateUpdateId = state.update?.id ?: 0L
                 clearStatus()
+                try {
+                    client!!.reportHeartbeat()
+                } catch (e: Exception) {
+                    // Best effort; the web UI will show the frame as offline
+                    // if heartbeats stop arriving.
+                }
                 enabledTransitions = state.transitions
                 state.update?.let { maybeInstallUpdate(it) }
                 val single = state.single
@@ -179,6 +196,20 @@ class MainActivity : Activity() {
                         }
                     }
                 }
+
+                // Don't let the long poll delay the next slide: cap it at the
+                // time remaining until the slideshow should advance.
+                waitSeconds = LONGPOLL_SECONDS
+                if (state.mode != "single" && images.isNotEmpty() && nextSlideAt > 0L) {
+                    val remainingMs = nextSlideAt - SystemClock.elapsedRealtime()
+                    waitSeconds = if (remainingMs <= 0L) {
+                        // The slide was due but could not be shown; retry soon.
+                        (POLL_MS / 1000L).toInt()
+                    } else {
+                        ((remainingMs + 999L) / 1000L).toInt()
+                            .coerceIn(1, LONGPOLL_SECONDS)
+                    }
+                }
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
@@ -186,9 +217,22 @@ class MainActivity : Activity() {
             }
 
             try {
-                Thread.sleep(POLL_MS)
+                // Long poll: return as soon as the server has new state, so
+                // commands like "Show on frame" apply immediately.
+                pendingState = client!!.waitForChange(
+                    stateVersion,
+                    stateUpdateId,
+                    waitSeconds,
+                )
             } catch (e: InterruptedException) {
                 break
+            } catch (e: Exception) {
+                setStatus("Server unreachable: ${e.message}")
+                try {
+                    Thread.sleep(POLL_MS)
+                } catch (e2: InterruptedException) {
+                    break
+                }
             }
         }
     }
@@ -444,6 +488,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val POLL_MS = 6000L
+        private const val LONGPOLL_SECONDS = 15
         private const val PLACEHOLDER = "\u0000placeholder"
         private const val UPDATE_FILE = "update.apk"
         private const val PREF_HANDLED_UPDATE = "handled_update_id"

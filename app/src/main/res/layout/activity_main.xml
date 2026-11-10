@@ -47,6 +47,14 @@
             android:textSize="16sp"
             android:paddingBottom="8dp" />
 
+        <TextView
+            android:id="@+id/pidView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
+
         <EditText
             android:id="@+id/urlInput"
             android:layout_width="match_parent"

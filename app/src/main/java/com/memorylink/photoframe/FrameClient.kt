@@ -153,6 +153,44 @@ class FrameClient(baseUrl: String) {
         }
     }
 
+    /** Tell the server this frame is still alive; called on every poll. */
+    fun reportHeartbeat() {
+        val conn = open("/api/frame/heartbeat")
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setFixedLengthStreamingMode(0)
+            conn.outputStream.use { /* empty body */ }
+            check(conn)
+            conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Block until the server state changes (or the long-poll timeout expires).
+     * A 204 response means nothing changed; the caller simply reconnects.
+     */
+    fun waitForChange(version: Long, updateId: Long, timeoutSeconds: Int): FrameState? {
+        val conn = open(
+            "/api/frame/wait?version=$version&update_id=$updateId&timeout=$timeoutSeconds"
+        )
+        conn.readTimeout = (timeoutSeconds + 10) * 1000
+        return try {
+            val code = conn.responseCode
+            if (code !in 200..299) throw java.io.IOException("HTTP $code")
+            if (code == 204) {
+                null
+            } else {
+                val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
+                FrameState.fromJson(JSONObject(body))
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun open(path: String): HttpURLConnection {
         val url = URL(base + path)
         val conn = url.openConnection() as HttpURLConnection

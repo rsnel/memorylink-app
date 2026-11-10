@@ -42,6 +42,19 @@ jobs:
         if: env.HAS_RELEASE_KEY == 'true'
         run: ./gradlew assembleRelease --no-daemon
 
+      - name: Name release APK with version
+        if: env.HAS_RELEASE_KEY == 'true'
+        id: release_apk
+        run: |
+          VERSION_NAME=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -1)
+          VERSION_CODE=$(sed -n 's/.*versionCode \([0-9][0-9]*\).*/\1/p' app/build.gradle | head -1)
+          test -n "$VERSION_NAME"
+          test -n "$VERSION_CODE"
+          NAME="MemoryLink-${VERSION_NAME}-v${VERSION_CODE}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$NAME"
+          echo "path=$NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact=${NAME%.apk}" >> "$GITHUB_OUTPUT"
+
       - name: Build debug APK (no signing secrets configured)
         if: env.HAS_RELEASE_KEY != 'true'
         run: ./gradlew assembleDebug --no-daemon
@@ -50,8 +63,8 @@ jobs:
         if: env.HAS_RELEASE_KEY == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: app/build/outputs/apk/release/app-release.apk
+          name: ${{ steps.release_apk.outputs.artifact }}
+          path: ${{ steps.release_apk.outputs.path }}
           if-no-files-found: error
 
       - name: Upload debug APK
