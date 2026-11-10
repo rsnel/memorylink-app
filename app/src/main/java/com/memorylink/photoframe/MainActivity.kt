@@ -58,6 +58,9 @@ class MainActivity : Activity() {
     private val random = Random()
     private var permissionPromptedFor = 0L
 
+    @Volatile
+    private var enabledTransitions: List<String> = emptyList()
+
     private val prefs by lazy { getSharedPreferences("memorylink", MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -147,6 +150,7 @@ class MainActivity : Activity() {
             try {
                 val state = client!!.fetchState()
                 clearStatus()
+                enabledTransitions = state.transitions
                 state.update?.let { maybeInstallUpdate(it) }
                 val single = state.single
                 if (state.mode == "single" && single != null) {
@@ -324,13 +328,22 @@ class MainActivity : Activity() {
         DISSOLVE, SLIDE_LEFT, SLIDE_RIGHT, SLIDE_UP, SLIDE_DOWN, ZOOM_IN, ZOOM_OUT,
     }
 
+    /** Effects enabled in the web UI; an empty selection means all of them. */
+    private fun transitionKinds(): List<Transition> {
+        val names = enabledTransitions
+        if (names.isEmpty()) return Transition.values().toList()
+        val allowed = names.toSet()
+        return Transition.values().filter { it.name in allowed }
+            .ifEmpty { Transition.values().toList() }
+    }
+
     /** Animate the new bitmap in over the old one with a random effect. */
     private fun transitionTo(bmp: Bitmap) {
         resetNextFrame()
         nextFrameView.setImageBitmap(bmp)
         nextFrameView.visibility = View.VISIBLE
 
-        val kinds = Transition.values()
+        val kinds = transitionKinds()
         val kind = kinds[random.nextInt(kinds.size)]
         val duration = 550L + random.nextInt(450)
         val width = (if (frameView.width > 0) frameView.width

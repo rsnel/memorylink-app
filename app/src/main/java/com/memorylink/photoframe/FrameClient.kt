@@ -39,6 +39,7 @@ data class FrameState(
     val version: Long,
     val intervalSeconds: Int,
     val random: Boolean,
+    val transitions: List<String>,
     val single: ImageRef?,
     val images: List<ImageRef>,
     val update: UpdateRef?,
@@ -47,6 +48,12 @@ data class FrameState(
         fun fromJson(o: JSONObject): FrameState {
             val single = if (!o.isNull("image")) ImageRef.fromJson(o.getJSONObject("image")) else null
             val update = if (o.isNull("update")) null else UpdateRef.fromJson(o.getJSONObject("update"))
+            val transitionsArr = o.optJSONArray("transitions")
+            val transitions = if (transitionsArr == null) {
+                emptyList()
+            } else {
+                (0 until transitionsArr.length()).map { transitionsArr.getString(it) }
+            }
             val arr = o.getJSONArray("images")
             val images = (0 until arr.length()).map { ImageRef.fromJson(arr.getJSONObject(it)) }
             return FrameState(
@@ -54,6 +61,7 @@ data class FrameState(
                 version = o.optLong("version", 0),
                 intervalSeconds = o.optInt("interval_seconds", 30),
                 random = o.optBoolean("random", false),
+                transitions = transitions,
                 single = single,
                 images = images,
                 update = update,
