@@ -23,8 +23,8 @@ android {
         minSdk 24
         targetSdk 34
         // Bump versionCode before building an APK you intend to push to the frame.
-        versionCode 12
-        versionName "1.9.2"
+        versionCode 13
+        versionName "1.9.3"
     }
 
     signingConfigs {
