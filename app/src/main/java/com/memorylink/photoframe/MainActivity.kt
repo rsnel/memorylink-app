@@ -2,6 +2,8 @@ package com.memorylink.photoframe
 
 import android.app.Activity
 import android.app.PendingIntent
+import android.app.admin.DevicePolicyManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.graphics.Bitmap
@@ -47,6 +49,7 @@ class MainActivity : Activity() {
     private lateinit var splashView: ImageView
     private lateinit var pidView: TextView
     private lateinit var versionView: TextView
+    private lateinit var ownerView: TextView
     private lateinit var clockView: View
     private lateinit var clockTime: TextView
     private lateinit var clockDate: TextView
@@ -98,11 +101,18 @@ class MainActivity : Activity() {
         splashView = findViewById(R.id.splashView)
         pidView = findViewById(R.id.pidView)
         versionView = findViewById(R.id.versionView)
+        ownerView = findViewById(R.id.ownerView)
         clockView = findViewById(R.id.clockView)
         clockTime = findViewById(R.id.clockTime)
         clockDate = findViewById(R.id.clockDate)
         pidView.text = "PID: ${Process.myPid()}"
         versionView.text = appVersionLabel()
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        ownerView.text = if (dpm.isDeviceOwnerApp(packageName)) {
+            "Device owner: yes — silent updates"
+        } else {
+            "Device owner: no"
+        }
         updateClockText()
         clockHandler.post(clockTicker)
 

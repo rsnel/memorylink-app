@@ -90,6 +90,14 @@
             android:paddingBottom="4dp" />
 
         <TextView
+            android:id="@+id/ownerView"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#888888"
+            android:textSize="12sp"
+            android:paddingBottom="4dp" />
+
+        <TextView
             android:id="@+id/pidView"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
