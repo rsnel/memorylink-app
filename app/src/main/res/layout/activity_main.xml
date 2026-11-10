@@ -23,6 +23,40 @@
         android:visibility="gone" />
 
     <LinearLayout
+        android:id="@+id/clockView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:orientation="vertical"
+        android:gravity="end"
+        android:padding="28dp"
+        android:visibility="gone"
+        android:importantForAccessibility="no">
+
+        <TextView
+            android:id="@+id/clockTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#ffffff"
+            android:textSize="44sp"
+            android:shadowColor="#99000000"
+            android:shadowDx="0"
+            android:shadowDy="2"
+            android:shadowRadius="8" />
+
+        <TextView
+            android:id="@+id/clockDate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#dddddd"
+            android:textSize="16sp"
+            android:shadowColor="#99000000"
+            android:shadowDx="0"
+            android:shadowDy="1"
+            android:shadowRadius="6" />
+    </LinearLayout>
+
+    <LinearLayout
         android:id="@+id/configView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

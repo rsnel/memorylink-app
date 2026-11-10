@@ -9,6 +9,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
@@ -24,6 +26,9 @@ import android.widget.TextView
 import java.io.File
 import java.math.BigInteger
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.Random
 
 /**
@@ -42,6 +47,20 @@ class MainActivity : Activity() {
     private lateinit var splashView: ImageView
     private lateinit var pidView: TextView
     private lateinit var versionView: TextView
+    private lateinit var clockView: View
+    private lateinit var clockTime: TextView
+    private lateinit var clockDate: TextView
+
+    private var clockEnabled = false
+    private val clockHandler = Handler(Looper.getMainLooper())
+    private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+    private val dateFormat = SimpleDateFormat("EEE d MMM", Locale.getDefault())
+    private val clockTicker = object : Runnable {
+        override fun run() {
+            updateClockText()
+            clockHandler.postDelayed(this, 15000L)
+        }
+    }
 
     private var client: FrameClient? = null
     private var frameThread: Thread? = null
@@ -79,8 +98,13 @@ class MainActivity : Activity() {
         splashView = findViewById(R.id.splashView)
         pidView = findViewById(R.id.pidView)
         versionView = findViewById(R.id.versionView)
+        clockView = findViewById(R.id.clockView)
+        clockTime = findViewById(R.id.clockTime)
+        clockDate = findViewById(R.id.clockDate)
         pidView.text = "PID: ${Process.myPid()}"
         versionView.text = appVersionLabel()
+        updateClockText()
+        clockHandler.post(clockTicker)
 
         // Show the splash briefly, then fade it away over whatever is behind it.
         splashView.postDelayed({
@@ -129,9 +153,27 @@ class MainActivity : Activity() {
         return "Version $name ($code)"
     }
 
+    private fun updateClockText() {
+        val now = Date()
+        clockTime.text = timeFormat.format(now)
+        clockDate.text = dateFormat.format(now)
+    }
+
+    private fun setClockEnabled(enabled: Boolean) {
+        if (clockEnabled == enabled) return
+        clockEnabled = enabled
+        applyClockVisibility()
+    }
+
+    private fun applyClockVisibility() {
+        val visible = clockEnabled && frameView.visibility == View.VISIBLE
+        clockView.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
     private fun showConfig() {
         resetNextFrame()
         frameView.visibility = View.GONE
+        applyClockVisibility()
         configView.visibility = View.VISIBLE
         statusView.visibility = View.GONE
         hideSystemBars(false)
@@ -144,6 +186,7 @@ class MainActivity : Activity() {
         statusView.visibility = View.GONE
         resetNextFrame()
         frameView.visibility = View.VISIBLE
+        applyClockVisibility()
         hideSystemBars(true)
         currentUrl = null
         client = FrameClient(url)
@@ -167,6 +210,7 @@ class MainActivity : Activity() {
         var stateVersion = -1L
         var stateUpdateId = 0L
         var stateUpdateStatus = ""
+        var stateShowClock = false
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
 
@@ -177,6 +221,8 @@ class MainActivity : Activity() {
                 stateVersion = state.version
                 stateUpdateId = state.update?.id ?: 0L
                 stateUpdateStatus = state.update?.status ?: ""
+                stateShowClock = state.showClock
+                runOnUiThread { setClockEnabled(stateShowClock) }
                 clearStatus()
                 try {
                     client!!.reportHeartbeat()
@@ -240,6 +286,7 @@ class MainActivity : Activity() {
                     stateVersion,
                     stateUpdateId,
                     stateUpdateStatus,
+                    stateShowClock,
                     waitSeconds,
                 )
             } catch (e: InterruptedException) {
@@ -553,6 +600,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        clockHandler.removeCallbacks(clockTicker)
         stopFrame()
     }
 

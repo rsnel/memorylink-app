@@ -43,6 +43,7 @@ data class FrameState(
     val version: Long,
     val intervalSeconds: Int,
     val random: Boolean,
+    val showClock: Boolean,
     val transitions: List<String>,
     val single: ImageRef?,
     val images: List<ImageRef>,
@@ -65,6 +66,7 @@ data class FrameState(
                 version = o.optLong("version", 0),
                 intervalSeconds = o.optInt("interval_seconds", 30),
                 random = o.optBoolean("random", false),
+                showClock = o.optBoolean("show_clock", false),
                 transitions = transitions,
                 single = single,
                 images = images,
@@ -214,11 +216,13 @@ class FrameClient(baseUrl: String) {
         version: Long,
         updateId: Long,
         updateStatus: String,
+        showClock: Boolean,
         timeoutSeconds: Int,
     ): FrameState? {
         val conn = open(
             "/api/frame/wait?version=$version&update_id=$updateId" +
-                "&update_status=$updateStatus&timeout=$timeoutSeconds"
+                "&update_status=$updateStatus&show_clock=$showClock" +
+                "&timeout=$timeoutSeconds"
         )
         conn.readTimeout = (timeoutSeconds + 10) * 1000
         return try {
