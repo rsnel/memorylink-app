@@ -313,17 +313,13 @@ class MainActivity : Activity() {
         if (update.status != "pending") return
         if (update.id <= prefs.getLong(FramePrefs.HANDLED_UPDATE, 0L)) return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !packageManager.canRequestPackageInstalls()
-        ) {
-            if (permissionPromptedFor == update.id) return
-            permissionPromptedFor = update.id
-            setStatus("Allow installs for MemoryLink; the update will continue")
-            startActivity(
-                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
-                    .setData(Uri.parse("package:$packageName"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!packageManager.canRequestPackageInstalls()) {
+                promptInstallPermission(update.id)
+                return
+            }
+        } else if (!unknownSourcesAllowed()) {
+            promptInstallPermission(update.id)
             return
         }
 
@@ -368,6 +364,33 @@ class MainActivity : Activity() {
             setStatus("Update ready — confirm the install on the frame")
         } catch (e: Exception) {
             setStatus("Update failed: ${e.message}")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun unknownSourcesAllowed(): Boolean =
+        Settings.Secure.getInt(
+            contentResolver,
+            Settings.Secure.INSTALL_NON_MARKET_APPS,
+            0,
+        ) == 1
+
+    private fun promptInstallPermission(updateId: Long) {
+        if (permissionPromptedFor == updateId) return
+        permissionPromptedFor = updateId
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setStatus("Allow installs for MemoryLink; the update will continue")
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                    .setData(Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } else {
+            setStatus("Enable Unknown sources in Settings; the update will continue")
+            startActivity(
+                Intent(Settings.ACTION_SECURITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
         }
     }
 
