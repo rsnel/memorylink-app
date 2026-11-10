@@ -63,7 +63,7 @@ class MainActivity : Activity() {
     @Volatile
     private var enabledTransitions: List<String> = emptyList()
 
-    private val prefs by lazy { getSharedPreferences("memorylink", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences(FramePrefs.NAME, MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -99,7 +99,7 @@ class MainActivity : Activity() {
                 setStatus("URL must start with http:// or https://")
                 return@setOnClickListener
             }
-            prefs.edit().putString("server_url", url).apply()
+            prefs.edit().putString(FramePrefs.SERVER_URL, url).apply()
             startFrame(url)
         }
 
@@ -110,7 +110,7 @@ class MainActivity : Activity() {
             true
         }
 
-        val saved = prefs.getString("server_url", null)
+        val saved = prefs.getString(FramePrefs.SERVER_URL, null)
         if (saved.isNullOrBlank()) showConfig() else startFrame(saved)
     }
 
@@ -120,7 +120,7 @@ class MainActivity : Activity() {
         configView.visibility = View.VISIBLE
         statusView.visibility = View.GONE
         hideSystemBars(false)
-        val saved = prefs.getString("server_url", null)
+        val saved = prefs.getString(FramePrefs.SERVER_URL, null)
         if (!saved.isNullOrBlank()) urlInput.setText(saved)
     }
 
@@ -151,6 +151,7 @@ class MainActivity : Activity() {
         var nextIndex = 0
         var stateVersion = -1L
         var stateUpdateId = 0L
+        var stateUpdateStatus = ""
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
 
@@ -160,6 +161,7 @@ class MainActivity : Activity() {
                 pendingState = null
                 stateVersion = state.version
                 stateUpdateId = state.update?.id ?: 0L
+                stateUpdateStatus = state.update?.status ?: ""
                 clearStatus()
                 try {
                     client!!.reportHeartbeat()
@@ -222,6 +224,7 @@ class MainActivity : Activity() {
                 pendingState = client!!.waitForChange(
                     stateVersion,
                     stateUpdateId,
+                    stateUpdateStatus,
                     waitSeconds,
                 )
             } catch (e: InterruptedException) {
@@ -292,7 +295,8 @@ class MainActivity : Activity() {
      * a confirmation dialog; the updated app is started by UpdateReceiver.
      */
     private fun maybeInstallUpdate(update: UpdateRef) {
-        if (update.id <= prefs.getLong(PREF_HANDLED_UPDATE, 0L)) return
+        if (update.status != "pending") return
+        if (update.id <= prefs.getLong(FramePrefs.HANDLED_UPDATE, 0L)) return
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !packageManager.canRequestPackageInstalls()
@@ -317,15 +321,42 @@ class MainActivity : Activity() {
                 file.delete()
                 throw java.io.IOException("checksum mismatch")
             }
-            prefs.edit().putLong(PREF_HANDLED_UPDATE, update.id).commit()
-            installApk(file)
+
+            // The update may have been canceled/replaced while downloading.
+            val latest = client!!.fetchUpdate()
+            if (latest == null || latest.id != update.id || latest.status != "pending") {
+                file.delete()
+                setStatus("Update is no longer pending")
+                return
+            }
+
+            prefs.edit()
+                .putLong(FramePrefs.HANDLED_UPDATE, update.id)
+                .putLong(FramePrefs.INSTALLING_UPDATE, update.id)
+                .commit()
+            try {
+                client!!.reportUpdateResult(update.id, "installing", null)
+            } catch (e: Exception) {
+                // Result reporting is best effort.
+            }
+            try {
+                installApk(file, update.id)
+            } catch (e: Exception) {
+                prefs.edit().remove(FramePrefs.INSTALLING_UPDATE).apply()
+                try {
+                    client!!.reportUpdateResult(update.id, "failed", e.message)
+                } catch (ignored: Exception) {
+                    // Best effort.
+                }
+                throw e
+            }
             setStatus("Update ready — confirm the install on the frame")
         } catch (e: Exception) {
             setStatus("Update failed: ${e.message}")
         }
     }
 
-    private fun installApk(file: File) {
+    private fun installApk(file: File, updateId: Long) {
         val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(packageName)
@@ -337,6 +368,7 @@ class MainActivity : Activity() {
                 session.fsync(out)
             }
             val intent = Intent(this, InstallResultReceiver::class.java)
+                .putExtra(InstallResultReceiver.EXTRA_UPDATE_ID, updateId)
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
             val pending = PendingIntent.getBroadcast(this, sessionId, intent, flags)
@@ -491,6 +523,5 @@ class MainActivity : Activity() {
         private const val LONGPOLL_SECONDS = 15
         private const val PLACEHOLDER = "\u0000placeholder"
         private const val UPDATE_FILE = "update.apk"
-        private const val PREF_HANDLED_UPDATE = "handled_update_id"
     }
 }

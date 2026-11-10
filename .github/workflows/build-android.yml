@@ -46,13 +46,11 @@ jobs:
         if: env.HAS_RELEASE_KEY != 'true'
         run: ./gradlew assembleDebug --no-daemon
 
-      - name: Name APK with version
+      - name: Name APK with build number
         id: apk
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          VERSION_NAME=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -1)
-          VERSION_CODE=$(sed -n 's/.*versionCode \([0-9][0-9]*\).*/\1/p' app/build.gradle | head -1)
-          test -n "$VERSION_NAME"
-          test -n "$VERSION_CODE"
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             SRC=app/build/outputs/apk/release/app-release.apk
             SUFFIX=""
@@ -60,7 +58,7 @@ jobs:
             SRC=app/build/outputs/apk/debug/app-debug.apk
             SUFFIX="-debug"
           fi
-          NAME="MemoryLink-${VERSION_NAME}-v${VERSION_CODE}${SUFFIX}.apk"
+          NAME="MemoryLink-${BUILD_NUMBER}${SUFFIX}.apk"
           cp "$SRC" "$NAME"
           echo "path=$NAME" >> "$GITHUB_OUTPUT"
 

@@ -21,6 +21,8 @@ data class UpdateRef(
     val name: String?,
     val sha256: String?,
     val size: Long,
+    val status: String,
+    val error: String?,
 ) {
     companion object {
         fun fromJson(o: JSONObject) = UpdateRef(
@@ -29,6 +31,8 @@ data class UpdateRef(
             name = if (o.isNull("name")) null else o.optString("name"),
             sha256 = if (o.isNull("sha256")) null else o.optString("sha256"),
             size = o.optLong("size", -1L),
+            status = if (o.isNull("status")) "pending" else o.optString("status", "pending"),
+            error = if (o.isNull("error")) null else o.optString("error"),
         )
     }
 }
@@ -168,13 +172,53 @@ class FrameClient(baseUrl: String) {
         }
     }
 
+    /** Current update metadata, or null when nothing is queued. */
+    fun fetchUpdate(): UpdateRef? {
+        val conn = open("/api/update")
+        return try {
+            check(conn)
+            val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
+            val o = JSONObject(body)
+            if (o.isNull("update")) null else UpdateRef.fromJson(o.getJSONObject("update"))
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Report the install state ("installing", "installed" or "failed"). */
+    fun reportUpdateResult(updateId: Long, status: String, message: String?) {
+        val payload = JSONObject()
+            .put("update_id", updateId)
+            .put("status", status)
+        if (!message.isNullOrBlank()) payload.put("message", message.take(500))
+        val conn = open("/api/frame/update-result")
+        try {
+            conn.connectTimeout = 4000
+            conn.readTimeout = 8000
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            check(conn)
+            conn.inputStream.use { it.readBytes() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /**
      * Block until the server state changes (or the long-poll timeout expires).
      * A 204 response means nothing changed; the caller simply reconnects.
      */
-    fun waitForChange(version: Long, updateId: Long, timeoutSeconds: Int): FrameState? {
+    fun waitForChange(
+        version: Long,
+        updateId: Long,
+        updateStatus: String,
+        timeoutSeconds: Int,
+    ): FrameState? {
         val conn = open(
-            "/api/frame/wait?version=$version&update_id=$updateId&timeout=$timeoutSeconds"
+            "/api/frame/wait?version=$version&update_id=$updateId" +
+                "&update_status=$updateStatus&timeout=$timeoutSeconds"
         )
         conn.readTimeout = (timeoutSeconds + 10) * 1000
         return try {
