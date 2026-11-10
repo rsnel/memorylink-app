@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var splashView: ImageView
     private lateinit var pidView: TextView
+    private lateinit var versionView: TextView
 
     private var client: FrameClient? = null
     private var frameThread: Thread? = null
@@ -77,7 +78,9 @@ class MainActivity : Activity() {
         statusView = findViewById(R.id.statusView)
         splashView = findViewById(R.id.splashView)
         pidView = findViewById(R.id.pidView)
+        versionView = findViewById(R.id.versionView)
         pidView.text = "PID: ${Process.myPid()}"
+        versionView.text = appVersionLabel()
 
         // Show the splash briefly, then fade it away over whatever is behind it.
         splashView.postDelayed({
@@ -112,6 +115,18 @@ class MainActivity : Activity() {
 
         val saved = prefs.getString(FramePrefs.SERVER_URL, null)
         if (saved.isNullOrBlank()) showConfig() else startFrame(saved)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun appVersionLabel(): String {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val name = info.versionName ?: "?"
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            info.versionCode.toLong()
+        }
+        return "Version $name ($code)"
     }
 
     private fun showConfig() {
