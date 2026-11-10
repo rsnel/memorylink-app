@@ -153,6 +153,26 @@ class MainActivity : Activity() {
         return "Version $name ($code)"
     }
 
+    @Suppress("DEPRECATION")
+    private fun installedVersionCode(): Long {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            info.versionCode.toLong()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun apkVersionCode(file: File): Long? {
+        val info = packageManager.getPackageArchiveInfo(file.path, 0) ?: return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            info.versionCode.toLong()
+        }
+    }
+
     private fun updateClockText() {
         val now = Date()
         clockTime.text = timeFormat.format(now)
@@ -380,6 +400,24 @@ class MainActivity : Activity() {
                 throw java.io.IOException("checksum mismatch")
             }
 
+            val newCode = apkVersionCode(file)
+            if (newCode == null) {
+                file.delete()
+                throw java.io.IOException("could not read APK version")
+            }
+            val currentCode = installedVersionCode()
+            if (newCode <= currentCode) {
+                file.delete()
+                val message = "APK versionCode $newCode is not newer than installed $currentCode"
+                setStatus("Update failed: $message")
+                try {
+                    client!!.reportUpdateResult(update.id, "failed", message)
+                } catch (ignored: Exception) {
+                    // Best effort.
+                }
+                return
+            }
+
             // The update may have been canceled/replaced while downloading.
             val latest = client!!.fetchUpdate()
             if (latest == null || latest.id != update.id || latest.status != "pending") {
@@ -401,8 +439,9 @@ class MainActivity : Activity() {
                 installApk(file, update.id)
             } catch (e: Exception) {
                 prefs.edit().remove(FramePrefs.INSTALLING_UPDATE).apply()
+                val detail = "Install error: ${e.message ?: e.javaClass.simpleName}"
                 try {
-                    client!!.reportUpdateResult(update.id, "failed", e.message)
+                    client!!.reportUpdateResult(update.id, "failed", detail)
                 } catch (ignored: Exception) {
                     // Best effort.
                 }
