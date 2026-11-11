@@ -5,6 +5,21 @@
     android:background="#000000">
 
     <ImageView
+        android:id="@+id/backdropView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
+    <View
+        android:id="@+id/backdropDim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#66000000"
+        android:visibility="gone" />
+
+    <ImageView
         android:id="@+id/frameView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

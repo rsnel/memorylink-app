@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -46,6 +47,8 @@ class MainActivity : Activity() {
 
     private lateinit var frameView: ImageView
     private lateinit var nextFrameView: ImageView
+    private lateinit var backdropView: ImageView
+    private lateinit var backdropDim: View
     private lateinit var configView: View
     private lateinit var urlInput: EditText
     private lateinit var connectBtn: Button
@@ -59,6 +62,11 @@ class MainActivity : Activity() {
     private lateinit var clockDate: TextView
 
     private var clockEnabled = false
+    @Volatile
+    private var blurEnabled = false
+    private var backdropBitmap: Bitmap? = null
+    private var appVersionCode = 0L
+    private var appVersionName = "?"
     private val clockHandler = Handler(Looper.getMainLooper())
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val dateFormat = SimpleDateFormat("EEE d MMM", Locale.getDefault())
@@ -98,6 +106,8 @@ class MainActivity : Activity() {
 
         frameView = findViewById(R.id.frameView)
         nextFrameView = findViewById(R.id.frameViewNext)
+        backdropView = findViewById(R.id.backdropView)
+        backdropDim = findViewById(R.id.backdropDim)
         configView = findViewById(R.id.configView)
         urlInput = findViewById(R.id.urlInput)
         connectBtn = findViewById(R.id.connectBtn)
@@ -110,6 +120,7 @@ class MainActivity : Activity() {
         clockTime = findViewById(R.id.clockTime)
         clockDate = findViewById(R.id.clockDate)
         pidView.text = "PID: ${Process.myPid()}"
+        loadAppVersion()
         versionView.text = appVersionLabel()
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         ownerView.text = if (dpm.isDeviceOwnerApp(packageName)) {
@@ -176,16 +187,17 @@ class MainActivity : Activity() {
         if (saved.isNullOrBlank()) showConfig() else startFrame(saved)
     }
 
+    private fun appVersionLabel() = "Version $appVersionName ($appVersionCode)"
+
     @Suppress("DEPRECATION")
-    private fun appVersionLabel(): String {
+    private fun loadAppVersion() {
         val info = packageManager.getPackageInfo(packageName, 0)
-        val name = info.versionName ?: "?"
-        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        appVersionName = info.versionName ?: "?"
+        appVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             info.longVersionCode
         } else {
             info.versionCode.toLong()
         }
-        return "Version $name ($code)"
     }
 
     @Suppress("DEPRECATION")
@@ -306,10 +318,98 @@ class MainActivity : Activity() {
         clockView.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
+    private fun updateBackdropVisibility() {
+        val visible = blurEnabled && backdropBitmap != null &&
+            frameView.visibility == View.VISIBLE
+        backdropView.visibility = if (visible) View.VISIBLE else View.GONE
+        backdropDim.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    private fun setBackdrop(bitmap: Bitmap?) {
+        backdropBitmap = bitmap
+        if (bitmap != null) {
+            backdropView.setImageBitmap(bitmap)
+        } else {
+            backdropView.setImageDrawable(null)
+        }
+        updateBackdropVisibility()
+    }
+
+    private fun setBlurEnabled(enabled: Boolean) {
+        if (blurEnabled == enabled) {
+            updateBackdropVisibility()
+            return
+        }
+        blurEnabled = enabled
+        if (!enabled) {
+            backdropBitmap = null
+            backdropView.setImageDrawable(null)
+            updateBackdropVisibility()
+            return
+        }
+        val url = currentUrl
+        val source = url?.let { bitmapCache.get(it) }
+        if (source == null) {
+            updateBackdropVisibility()
+            return
+        }
+        Thread {
+            val blurred = blurredBackdrop(source)
+            runOnUiThread {
+                if (blurEnabled && currentUrl == url) {
+                    setBackdrop(blurred)
+                }
+            }
+        }.start()
+    }
+
+    /** Tiny, heavily downscaled image used as a soft fill behind the photo. */
+    private fun blurredBackdrop(source: Bitmap): Bitmap {
+        val maxDim = 64
+        val scale = maxDim.toFloat() / maxOf(source.width, source.height)
+        val width = (source.width * scale).toInt().coerceAtLeast(1)
+        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        val small = Bitmap.createScaledBitmap(source, width, height, true)
+        var src = IntArray(width * height)
+        small.getPixels(src, 0, width, 0, 0, width, height)
+        var dst = IntArray(src.size)
+        repeat(2) {
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    var a = 0
+                    var r = 0
+                    var g = 0
+                    var b = 0
+                    var n = 0
+                    for (dy in -2..2) {
+                        val yy = (y + dy).coerceIn(0, height - 1)
+                        for (dx in -2..2) {
+                            val xx = (x + dx).coerceIn(0, width - 1)
+                            val color = src[yy * width + xx]
+                            a += Color.alpha(color)
+                            r += Color.red(color)
+                            g += Color.green(color)
+                            b += Color.blue(color)
+                            n++
+                        }
+                    }
+                    dst[y * width + x] = Color.argb(a / n, r / n, g / n, b / n)
+                }
+            }
+            val tmp = src
+            src = dst
+            dst = tmp
+        }
+        val out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        out.setPixels(src, 0, width, 0, 0, width, height)
+        return out
+    }
+
     private fun showConfig() {
         resetNextFrame()
         frameView.visibility = View.GONE
         applyClockVisibility()
+        updateBackdropVisibility()
         configView.visibility = View.VISIBLE
         statusView.visibility = View.GONE
         hideSystemBars(false)
@@ -323,6 +423,7 @@ class MainActivity : Activity() {
         resetNextFrame()
         frameView.visibility = View.VISIBLE
         applyClockVisibility()
+        updateBackdropVisibility()
         hideSystemBars(true)
         currentUrl = null
         client = FrameClient(url)
@@ -347,6 +448,7 @@ class MainActivity : Activity() {
         var stateUpdateId = 0L
         var stateUpdateStatus = ""
         var stateShowClock = false
+        var stateBlur = false
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
 
@@ -358,10 +460,14 @@ class MainActivity : Activity() {
                 stateUpdateId = state.update?.id ?: 0L
                 stateUpdateStatus = state.update?.status ?: ""
                 stateShowClock = state.showClock
-                runOnUiThread { setClockEnabled(stateShowClock) }
+                stateBlur = state.blurBackground
+                runOnUiThread {
+                    setClockEnabled(stateShowClock)
+                    setBlurEnabled(stateBlur)
+                }
                 clearStatus()
                 try {
-                    client!!.reportHeartbeat()
+                    client!!.reportHeartbeat(appVersionCode, appVersionName)
                 } catch (e: Exception) {
                     // Best effort; the web UI will show the frame as offline
                     // if heartbeats stop arriving.
@@ -423,6 +529,7 @@ class MainActivity : Activity() {
                     stateUpdateId,
                     stateUpdateStatus,
                     stateShowClock,
+                    stateBlur,
                     waitSeconds,
                 )
             } catch (e: InterruptedException) {
@@ -457,7 +564,8 @@ class MainActivity : Activity() {
                 bitmapCache.put(ref.url, it)
             }
             currentUrl = ref.url
-            runOnUiThread { transitionTo(bmp) }
+            val backdrop = if (blurEnabled) blurredBackdrop(bmp) else null
+            runOnUiThread { transitionTo(bmp, backdrop) }
             try {
                 client!!.reportShown(ref.id)
             } catch (e: Exception) {
@@ -636,6 +744,7 @@ class MainActivity : Activity() {
         currentUrl = PLACEHOLDER
         runOnUiThread {
             resetNextFrame()
+            setBackdrop(null)
             frameView.setImageBitmap(null)
         }
     }
@@ -654,8 +763,10 @@ class MainActivity : Activity() {
     }
 
     /** Animate the new bitmap in over the old one with a random effect. */
-    private fun transitionTo(bmp: Bitmap) {
+    private fun transitionTo(bmp: Bitmap, backdrop: Bitmap?) {
         resetNextFrame()
+        nextFrameView.setBackgroundColor(if (blurEnabled) Color.TRANSPARENT else Color.BLACK)
+        if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
         nextFrameView.setImageBitmap(bmp)
         nextFrameView.visibility = View.VISIBLE
 

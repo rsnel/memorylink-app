@@ -44,6 +44,7 @@ data class FrameState(
     val intervalSeconds: Int,
     val random: Boolean,
     val showClock: Boolean,
+    val blurBackground: Boolean,
     val transitions: List<String>,
     val single: ImageRef?,
     val images: List<ImageRef>,
@@ -67,6 +68,7 @@ data class FrameState(
                 intervalSeconds = o.optInt("interval_seconds", 30),
                 random = o.optBoolean("random", false),
                 showClock = o.optBoolean("show_clock", false),
+                blurBackground = o.optBoolean("blur_background", false),
                 transitions = transitions,
                 single = single,
                 images = images,
@@ -160,8 +162,11 @@ class FrameClient(baseUrl: String) {
     }
 
     /** Tell the server this frame is still alive; called on every poll. */
-    fun reportHeartbeat() {
-        val conn = open("/api/frame/heartbeat")
+    fun reportHeartbeat(versionCode: Long, versionName: String) {
+        val encodedName = java.net.URLEncoder.encode(versionName, "UTF-8")
+        val conn = open(
+            "/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName"
+        )
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
@@ -217,12 +222,13 @@ class FrameClient(baseUrl: String) {
         updateId: Long,
         updateStatus: String,
         showClock: Boolean,
+        blurBackground: Boolean,
         timeoutSeconds: Int,
     ): FrameState? {
         val conn = open(
             "/api/frame/wait?version=$version&update_id=$updateId" +
                 "&update_status=$updateStatus&show_clock=$showClock" +
-                "&timeout=$timeoutSeconds"
+                "&blur_background=$blurBackground&timeout=$timeoutSeconds"
         )
         conn.readTimeout = (timeoutSeconds + 10) * 1000
         return try {
