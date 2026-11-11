@@ -12,6 +12,8 @@ import android.content.pm.PackageInstaller
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -451,11 +453,20 @@ class MainActivity : Activity() {
         var stateBlur = false
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
+        var failingSince = 0L
 
         while (running) {
+            if (!networkAvailable()) {
+                failingSince = 0L
+                setStatus("Waiting for network…")
+                if (!sleepInterruptible(NETWORK_RETRY_MS)) break
+                continue
+            }
+
             try {
                 val state = pendingState ?: client!!.fetchState()
                 pendingState = null
+                failingSince = 0L
                 stateVersion = state.version
                 stateUpdateId = state.update?.id ?: 0L
                 stateUpdateStatus = state.update?.status ?: ""
@@ -518,7 +529,23 @@ class MainActivity : Activity() {
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
-                setStatus("Server unreachable: ${e.message}")
+                if (!networkAvailable()) {
+                    failingSince = 0L
+                    setStatus("Waiting for network…")
+                    if (!sleepInterruptible(NETWORK_RETRY_MS)) break
+                } else {
+                    if (failingSince == 0L) failingSince = SystemClock.elapsedRealtime()
+                    val waited = SystemClock.elapsedRealtime() - failingSince
+                    if (waited < SERVER_GRACE_MS) {
+                        setStatus("Contacting server… (${(waited + 999) / 1000}s)")
+                    } else {
+                        setStatus(
+                            "Server unreachable: ${e.message ?: "connection failed"} — retrying"
+                        )
+                    }
+                    if (!sleepInterruptible(POLL_MS)) break
+                }
+                continue
             }
 
             try {
@@ -535,14 +562,38 @@ class MainActivity : Activity() {
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
-                setStatus("Server unreachable: ${e.message}")
-                try {
-                    Thread.sleep(POLL_MS)
-                } catch (e2: InterruptedException) {
-                    break
+                if (!networkAvailable()) {
+                    failingSince = 0L
+                    setStatus("Waiting for network…")
+                    if (!sleepInterruptible(NETWORK_RETRY_MS)) break
+                } else {
+                    if (failingSince == 0L) failingSince = SystemClock.elapsedRealtime()
+                    val waited = SystemClock.elapsedRealtime() - failingSince
+                    if (waited < SERVER_GRACE_MS) {
+                        setStatus("Contacting server… (${(waited + 999) / 1000}s)")
+                    } else {
+                        setStatus(
+                            "Server unreachable: ${e.message ?: "connection failed"} — retrying"
+                        )
+                    }
+                    if (!sleepInterruptible(POLL_MS)) break
                 }
             }
         }
+    }
+
+    private fun networkAvailable(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val capabilities = cm.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun sleepInterruptible(ms: Long): Boolean = try {
+        Thread.sleep(ms)
+        true
+    } catch (e: InterruptedException) {
+        false
     }
 
     /**
@@ -872,6 +923,8 @@ class MainActivity : Activity() {
 
     companion object {
         private const val POLL_MS = 6000L
+        private const val NETWORK_RETRY_MS = 2000L
+        private const val SERVER_GRACE_MS = 20000L
         private const val LONGPOLL_SECONDS = 15
         private const val PLACEHOLDER = "\u0000placeholder"
         private const val UPDATE_FILE = "update.apk"
