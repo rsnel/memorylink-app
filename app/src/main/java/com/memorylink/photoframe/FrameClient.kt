@@ -2,6 +2,7 @@ package com.memorylink.photoframe
 
 import android.net.Uri
 import android.util.Base64
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -36,6 +37,9 @@ data class UpdateRef(
         )
     }
 }
+
+/** A nearby Bluetooth device reported to the server. */
+data class BluetoothSeen(val address: String, val name: String?, val rssi: Int)
 
 /** Parsed response of GET /api/frame/current. */
 data class FrameState(
@@ -240,6 +244,33 @@ class FrameClient(baseUrl: String) {
                 val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
                 FrameState.fromJson(JSONObject(body))
             }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Report nearby Bluetooth devices seen during a scan. */
+    fun reportBluetooth(devices: List<BluetoothSeen>) {
+        if (devices.isEmpty()) return
+        val array = JSONArray()
+        for (device in devices) {
+            val item = JSONObject()
+                .put("address", device.address)
+                .put("rssi", device.rssi)
+            if (device.name != null) item.put("name", device.name)
+            array.put(item)
+        }
+        val payload = JSONObject().put("devices", array)
+        val conn = open("/api/bluetooth")
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.outputStream.use {
+                it.write(payload.toString().toByteArray(Charsets.UTF_8))
+            }
+            check(conn)
+            conn.inputStream.use { it.readBytes() }
         } finally {
             conn.disconnect()
         }

@@ -1,17 +1,26 @@
 package com.memorylink.photoframe
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -22,6 +31,7 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import android.util.LruCache
 import android.view.View
 import android.view.WindowManager
@@ -69,6 +79,32 @@ class MainActivity : Activity() {
     private var backdropBitmap: Bitmap? = null
     private var appVersionCode = 0L
     private var appVersionName = "?"
+
+    private var bluetoothAdapter: BluetoothAdapter? = null
+    private var bleScanner: BluetoothLeScanner? = null
+    private var bluetoothScanning = false
+    private var bluetoothPermissionRequested = false
+    private var bluetoothEnableAsked = false
+    private val bluetoothResults = LinkedHashMap<String, BluetoothSeen>()
+    private val bluetoothHandler = Handler(Looper.getMainLooper())
+    private val bluetoothScanRunnable = Runnable { beginBluetoothScan() }
+    private val bluetoothStopRunnable = Runnable { finishBluetoothScan() }
+    private val bluetoothScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+            recordBluetoothResult(result)
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+            results?.forEach { recordBluetoothResult(it) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            bluetoothScanning = false
+            Log.w("MemoryLink", "Bluetooth scan failed: $errorCode")
+            bluetoothHandler.removeCallbacks(bluetoothStopRunnable)
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_INTERVAL_MS)
+        }
+    }
     private val clockHandler = Handler(Looper.getMainLooper())
     private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val dateFormat = SimpleDateFormat("EEE d MMM", Locale.getDefault())
@@ -432,12 +468,14 @@ class MainActivity : Activity() {
         stopFrame()
         running = true
         frameThread = Thread({ frameLoop() }, "frame-loop").also { it.start() }
+        startBluetoothScanning()
     }
 
     private fun stopFrame() {
         running = false
         frameThread?.interrupt()
         frameThread = null
+        stopBluetoothScanning()
     }
 
     private fun frameLoop() {
@@ -594,6 +632,196 @@ class MainActivity : Activity() {
         true
     } catch (e: InterruptedException) {
         false
+    }
+
+    private fun requiredBluetoothPermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+    private fun hasBluetoothPermissions(): Boolean =
+        requiredBluetoothPermissions().all {
+            checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        }
+
+    private fun locationEnabled(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return true
+        val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return try {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun requestBluetoothPermissions() {
+        if (bluetoothPermissionRequested) return
+        bluetoothPermissionRequested = true
+        requestPermissions(requiredBluetoothPermissions(), BLUETOOTH_PERMISSION_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == BLUETOOTH_PERMISSION_REQUEST) {
+            bluetoothPermissionRequested = false
+            if (hasBluetoothPermissions()) {
+                startBluetoothScanning()
+            } else {
+                setStatus("Bluetooth scanning needs permission")
+            }
+        }
+    }
+
+    private fun startBluetoothScanning() {
+        if (!running) return
+        if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
+            return
+        }
+        if (!locationEnabled()) {
+            setStatus("Enable location services for Bluetooth scanning")
+            bluetoothHandler.removeCallbacks(bluetoothScanRunnable)
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_ENABLE_RETRY_MS)
+            return
+        }
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = manager.adapter
+        if (adapter == null) {
+            setStatus("Bluetooth is not available")
+            return
+        }
+        bluetoothAdapter = adapter
+        val enabled = try {
+            adapter.isEnabled
+        } catch (e: SecurityException) {
+            false
+        }
+        if (!enabled) {
+            if (!bluetoothEnableAsked) {
+                bluetoothEnableAsked = true
+                setStatus("Enable Bluetooth for nearby-device scanning")
+                try {
+                    startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                } catch (e: Exception) {
+                    Log.w("MemoryLink", "Could not request Bluetooth enable", e)
+                }
+            }
+            bluetoothHandler.removeCallbacks(bluetoothScanRunnable)
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_ENABLE_RETRY_MS)
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            setStatus("Bluetooth LE is not supported")
+            return
+        }
+        bleScanner = scanner
+        bluetoothHandler.removeCallbacks(bluetoothScanRunnable)
+        bluetoothHandler.post(bluetoothScanRunnable)
+    }
+
+    private fun beginBluetoothScan() {
+        if (!running || bluetoothScanning) return
+        if (!hasBluetoothPermissions()) {
+            requestBluetoothPermissions()
+            return
+        }
+        if (!locationEnabled()) {
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_ENABLE_RETRY_MS)
+            return
+        }
+        val scanner = bleScanner ?: return
+        val adapter = bluetoothAdapter ?: return
+        val enabled = try {
+            adapter.isEnabled
+        } catch (e: SecurityException) {
+            false
+        }
+        if (!enabled) {
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_ENABLE_RETRY_MS)
+            return
+        }
+        bluetoothResults.clear()
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+        try {
+            bluetoothScanning = true
+            scanner.startScan(null, settings, bluetoothScanCallback)
+            bluetoothHandler.postDelayed(bluetoothStopRunnable, BLUETOOTH_SCAN_MS)
+        } catch (e: SecurityException) {
+            bluetoothScanning = false
+            requestBluetoothPermissions()
+        } catch (e: Exception) {
+            bluetoothScanning = false
+            Log.w("MemoryLink", "Could not start Bluetooth scan", e)
+            bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_INTERVAL_MS)
+        }
+    }
+
+    private fun recordBluetoothResult(result: ScanResult?) {
+        if (!bluetoothScanning || result == null) return
+        val device = result.device ?: return
+        val address = try {
+            device.address
+        } catch (e: SecurityException) {
+            return
+        }
+        if (address.isNullOrBlank()) return
+        val name = try {
+            device.name
+        } catch (e: SecurityException) {
+            null
+        }
+        val previous = bluetoothResults[address]
+        bluetoothResults[address] = BluetoothSeen(address, name ?: previous?.name, result.rssi)
+    }
+
+    private fun finishBluetoothScan() {
+        if (!bluetoothScanning) return
+        bluetoothScanning = false
+        try {
+            bleScanner?.stopScan(bluetoothScanCallback)
+        } catch (e: Exception) {
+            Log.w("MemoryLink", "Could not stop Bluetooth scan", e)
+        }
+        val devices = bluetoothResults.values.toList()
+        bluetoothResults.clear()
+        bluetoothHandler.postDelayed(bluetoothScanRunnable, BLUETOOTH_INTERVAL_MS)
+        if (devices.isEmpty()) return
+        val activeClient = client ?: return
+        Thread {
+            try {
+                activeClient.reportBluetooth(devices)
+            } catch (e: Exception) {
+                Log.w("MemoryLink", "Could not report Bluetooth devices", e)
+            }
+        }.start()
+    }
+
+    private fun stopBluetoothScanning() {
+        bluetoothHandler.removeCallbacksAndMessages(null)
+        if (bluetoothScanning) {
+            try {
+                bleScanner?.stopScan(bluetoothScanCallback)
+            } catch (e: Exception) {
+                Log.w("MemoryLink", "Could not stop Bluetooth scan", e)
+            }
+        }
+        bluetoothScanning = false
+        bluetoothResults.clear()
+        bleScanner = null
+        bluetoothAdapter = null
     }
 
     /**
@@ -915,6 +1143,13 @@ class MainActivity : Activity() {
         if (hasFocus && frameView.visibility == View.VISIBLE) hideSystemBars(true)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (running && hasBluetoothPermissions()) {
+            startBluetoothScanning()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         clockHandler.removeCallbacks(clockTicker)
@@ -928,5 +1163,9 @@ class MainActivity : Activity() {
         private const val LONGPOLL_SECONDS = 15
         private const val PLACEHOLDER = "\u0000placeholder"
         private const val UPDATE_FILE = "update.apk"
+        private const val BLUETOOTH_PERMISSION_REQUEST = 1001
+        private const val BLUETOOTH_SCAN_MS = 10_000L
+        private const val BLUETOOTH_INTERVAL_MS = 120_000L
+        private const val BLUETOOTH_ENABLE_RETRY_MS = 30_000L
     }
 }
