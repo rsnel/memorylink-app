@@ -14,6 +14,13 @@ def releaseKeyAlias = System.getenv("MEMORYLINK_KEY_ALIAS") ?: keystoreProps.get
 def releaseKeyPassword = System.getenv("MEMORYLINK_KEY_PASSWORD") ?: keystoreProps.getProperty("keyPassword")
 def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
+// CI passes the workflow run number as BUILD_NUMBER; use it as versionCode so
+// the APK's version always matches its build number. Local builds fall back to
+// a manual value (pass BUILD_NUMBER=<n> to override).
+def buildNumberEnv = System.getenv("BUILD_NUMBER")
+def versionCodeValue = (buildNumberEnv != null && buildNumberEnv.isInteger())
+        ? buildNumberEnv.toInteger() : 17
+
 android {
     namespace 'com.memorylink.photoframe'
     compileSdk 34
@@ -22,8 +29,7 @@ android {
         applicationId "com.memorylink.photoframe"
         minSdk 24
         targetSdk 34
-        // Bump versionCode before building an APK you intend to push to the frame.
-        versionCode 16
+        versionCode versionCodeValue
         versionName "1.10"
     }
 

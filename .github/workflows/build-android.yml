@@ -12,6 +12,8 @@ jobs:
       # The secrets context cannot be used in step-level `if` conditions, so
       # expose a boolean via the environment and test that instead.
       HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      # Used as the APK versionCode and in the artifact filename.
+      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,8 +50,6 @@ jobs:
 
       - name: Name APK with build number
         id: apk
-        env:
-          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             SRC=app/build/outputs/apk/release/app-release.apk
