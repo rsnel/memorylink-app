@@ -4,5 +4,10 @@
     <string name="config_prompt">Enter the HTTPS URL of your MemoryLink server</string>
     <string name="hint_url">https://your-server.example.com</string>
     <string name="connect">Connect</string>
+    <string name="open_settings">Settings</string>
+    <string name="all_apps">All apps</string>
+    <string name="keyboard">Keyboard</string>
+    <string name="set_launcher">Set as launcher</string>
+    <string name="resume_frame">Resume frame</string>
     <string name="frame_image_desc">Frame image</string>
 </resources>

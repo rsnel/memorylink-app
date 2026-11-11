@@ -1,10 +1,13 @@
 package com.memorylink.photoframe
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -21,6 +24,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -140,6 +144,27 @@ class MainActivity : Activity() {
             startFrame(url)
         }
 
+        findViewById<Button>(R.id.settingsBtn).setOnClickListener {
+            openSystemSettings()
+        }
+        findViewById<Button>(R.id.appsBtn).setOnClickListener {
+            showAppLauncher()
+        }
+        findViewById<Button>(R.id.keyboardBtn).setOnClickListener {
+            showKeyboardPicker()
+        }
+        findViewById<Button>(R.id.launcherBtn).setOnClickListener {
+            setAsLauncher()
+        }
+        findViewById<Button>(R.id.resumeBtn).setOnClickListener {
+            val saved = prefs.getString(FramePrefs.SERVER_URL, null)
+            if (saved.isNullOrBlank()) {
+                setStatus("Enter the server URL first")
+            } else {
+                startFrame(saved)
+            }
+        }
+
         // Long-press the frame to reconfigure (change the server URL).
         frameView.setOnLongClickListener {
             stopFrame()
@@ -180,6 +205,87 @@ class MainActivity : Activity() {
             info.longVersionCode
         } else {
             info.versionCode.toLong()
+        }
+    }
+
+    private fun openSystemSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        } catch (e: Exception) {
+            setStatus("Could not open Settings: ${e.message}")
+        }
+    }
+
+    private fun showAppLauncher() {
+        val launcherIntent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = packageManager.queryIntentActivities(launcherIntent, 0)
+            .filter { it.activityInfo.packageName != packageName }
+            .sortedBy {
+                it.loadLabel(packageManager).toString().lowercase(Locale.getDefault())
+            }
+        if (apps.isEmpty()) {
+            setStatus("No launchable apps found")
+            return
+        }
+        val labels = apps.map { it.loadLabel(packageManager).toString() }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Open app")
+            .setItems(labels) { _, which ->
+                val app = apps[which]
+                val launch = Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setComponent(
+                        ComponentName(app.activityInfo.packageName, app.activityInfo.name)
+                    )
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    startActivity(launch)
+                } catch (e: Exception) {
+                    setStatus("Could not open app: ${e.message}")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showKeyboardPicker() {
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            urlInput.requestFocus()
+            imm.showInputMethodPicker()
+        } catch (e: Exception) {
+            setStatus("Could not show keyboards: ${e.message}")
+        }
+    }
+
+    private fun setAsLauncher() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (dpm.isDeviceOwnerApp(packageName)) {
+            val filter = IntentFilter(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                addCategory(Intent.CATEGORY_DEFAULT)
+            }
+            try {
+                dpm.addPersistentPreferredActivity(
+                    ComponentName(this, AdminReceiver::class.java),
+                    filter,
+                    ComponentName(this, MainActivity::class.java),
+                )
+                setStatus("MemoryLink is now the Home app")
+            } catch (e: Exception) {
+                setStatus("Could not set Home app: ${e.message}")
+            }
+        } else {
+            try {
+                startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+            } catch (e: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                } catch (e2: Exception) {
+                    setStatus("Could not open Home settings: ${e.message}")
+                }
+            }
         }
     }
 
