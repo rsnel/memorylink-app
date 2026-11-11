@@ -7,4 +7,5 @@ object FramePrefs {
     const val HANDLED_UPDATE = "handled_update_id"
     const val INSTALLING_UPDATE = "installing_update_id"
     const val LAST_SHOWN_URL = "last_shown_url"
+    const val HANDLED_RESTART = "handled_restart_id"
 }

@@ -575,6 +575,8 @@ class MainActivity : Activity() {
         var stateUpdateStatus = ""
         var stateShowClock = false
         var stateBlur = false
+        var stateRestartId = 0L
+        var lastRestartId = prefs.getLong(FramePrefs.HANDLED_RESTART, 0L)
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
         var failingSince = 0L
@@ -596,6 +598,18 @@ class MainActivity : Activity() {
                 stateUpdateStatus = state.update?.status ?: ""
                 stateShowClock = state.showClock
                 stateBlur = state.blurBackground
+                stateRestartId = state.restartId
+                if (state.restartId > lastRestartId) {
+                    prefs.edit()
+                        .putLong(FramePrefs.HANDLED_RESTART, state.restartId)
+                        .commit()
+                    lastRestartId = state.restartId
+                    runOnUiThread {
+                        setStatus("Restarting frame…")
+                        recreate()
+                    }
+                    return
+                }
                 runOnUiThread {
                     setClockEnabled(stateShowClock)
                     setBlurEnabled(stateBlur)
@@ -681,6 +695,7 @@ class MainActivity : Activity() {
                     stateUpdateStatus,
                     stateShowClock,
                     stateBlur,
+                    stateRestartId,
                     waitSeconds,
                 )
             } catch (e: InterruptedException) {

@@ -49,6 +49,7 @@ data class FrameState(
     val random: Boolean,
     val showClock: Boolean,
     val blurBackground: Boolean,
+    val restartId: Long,
     val transitions: List<String>,
     val single: ImageRef?,
     val images: List<ImageRef>,
@@ -73,6 +74,7 @@ data class FrameState(
                 random = o.optBoolean("random", false),
                 showClock = o.optBoolean("show_clock", false),
                 blurBackground = o.optBoolean("blur_background", false),
+                restartId = o.optLong("restart_id", 0),
                 transitions = transitions,
                 single = single,
                 images = images,
@@ -227,12 +229,14 @@ class FrameClient(baseUrl: String) {
         updateStatus: String,
         showClock: Boolean,
         blurBackground: Boolean,
+        restartId: Long,
         timeoutSeconds: Int,
     ): FrameState? {
         val conn = open(
             "/api/frame/wait?version=$version&update_id=$updateId" +
                 "&update_status=$updateStatus&show_clock=$showClock" +
-                "&blur_background=$blurBackground&timeout=$timeoutSeconds"
+                "&blur_background=$blurBackground&restart_id=$restartId" +
+                "&timeout=$timeoutSeconds"
         )
         conn.readTimeout = (timeoutSeconds + 10) * 1000
         return try {
