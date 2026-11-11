@@ -19,7 +19,10 @@ import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -181,6 +184,8 @@ class MainActivity : Activity() {
                 }
         }, 3200L)
 
+        personalizeSplash()
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         connectBtn.setOnClickListener {
@@ -236,6 +241,87 @@ class MainActivity : Activity() {
         } else {
             info.versionCode.toLong()
         }
+    }
+
+    private fun personalizeSplash() {
+        val url = prefs.getString(FramePrefs.LAST_SHOWN_URL, null) ?: return
+        val file = imageFile(url)
+        if (!file.isFile) return
+        Thread {
+            val composed = composeSplash(file)
+            if (composed != null) {
+                runOnUiThread {
+                    if (splashView.visibility == View.VISIBLE) {
+                        splashView.setImageBitmap(composed)
+                    } else {
+                        composed.recycle()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun composeSplash(photoFile: File): Bitmap? {
+        val overlayOptions = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val overlay = BitmapFactory.decodeResource(
+            resources, R.drawable.splash_overlay, overlayOptions
+        ) ?: return null
+        val photoOptions = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val photo = BitmapFactory.decodeFile(photoFile.path, photoOptions)
+            ?: run {
+                overlay.recycle()
+                return null
+            }
+
+        val width = overlay.width
+        val height = overlay.height
+        val quad = floatArrayOf(
+            0.2166667f * width, 0.5682292f * height,
+            0.7722222f * width, 0.5729167f * height,
+            0.7870370f * width, 0.7781250f * height,
+            0.2351852f * width, 0.7791667f * height,
+        )
+        val cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4f
+        val cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4f
+        val expand = 1.012f
+        for (i in quad.indices step 2) {
+            quad[i] = cx + (quad[i] - cx) * expand
+            quad[i + 1] = cy + (quad[i + 1] - cy) * expand
+        }
+
+        // Center-crop the photo to the opening's aspect, then warp it into place.
+        val avgWidth = ((quad[2] - quad[0]) + (quad[6] - quad[4])) / 2f
+        val avgHeight = ((quad[7] - quad[1]) + (quad[5] - quad[3])) / 2f
+        val targetAspect = avgWidth / avgHeight
+        var cropW = photo.width.toFloat()
+        var cropH = cropW / targetAspect
+        if (cropH > photo.height) {
+            cropH = photo.height.toFloat()
+            cropW = cropH * targetAspect
+        }
+        val sx = (photo.width - cropW) / 2f
+        val sy = (photo.height - cropH) / 2f
+        val src = floatArrayOf(
+            sx, sy,
+            sx + cropW, sy,
+            sx + cropW, sy + cropH,
+            sx, sy + cropH,
+        )
+
+        val matrix = Matrix()
+        matrix.setPolyToPoly(src, 0, quad, 0, 4)
+        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(result)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(photo, matrix, paint)
+        canvas.drawBitmap(overlay, 0f, 0f, null)
+        photo.recycle()
+        overlay.recycle()
+        return result
     }
 
     @Suppress("DEPRECATION")
@@ -843,6 +929,7 @@ class MainActivity : Activity() {
                 bitmapCache.put(ref.url, it)
             }
             currentUrl = ref.url
+            prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
             val backdrop = if (blurEnabled) blurredBackdrop(bmp) else null
             runOnUiThread { transitionTo(bmp, backdrop) }
             try {
