@@ -53,6 +53,8 @@ data class FrameState(
     val transitions: List<String>,
     val single: ImageRef?,
     val images: List<ImageRef>,
+    /** Every image in gallery order; null when the server is too old to send it. */
+    val library: List<ImageRef>?,
     val update: UpdateRef?,
 ) {
     companion object {
@@ -67,6 +69,10 @@ data class FrameState(
             }
             val arr = o.getJSONArray("images")
             val images = (0 until arr.length()).map { ImageRef.fromJson(arr.getJSONObject(it)) }
+            val libraryArr = o.optJSONArray("library")
+            val library = libraryArr?.let { list ->
+                (0 until list.length()).map { ImageRef.fromJson(list.getJSONObject(it)) }
+            }
             return FrameState(
                 mode = o.optString("mode", "slideshow"),
                 version = o.optLong("version", 0),
@@ -78,6 +84,7 @@ data class FrameState(
                 transitions = transitions,
                 single = single,
                 images = images,
+                library = library,
                 update = update,
             )
         }

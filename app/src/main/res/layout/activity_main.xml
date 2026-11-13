@@ -37,6 +37,29 @@
         android:importantForAccessibility="no"
         android:visibility="gone" />
 
+    <!-- Swipe and pinch layer over the photo; draws the photo grid. -->
+    <com.memorylink.photoframe.BrowseView
+        android:id="@+id/browseView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/browseLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="20dp"
+        android:background="@drawable/browse_label_bg"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:textColor="#ffffff"
+        android:textSize="18sp"
+        android:visibility="gone"
+        android:importantForAccessibility="no" />
+
     <LinearLayout
         android:id="@+id/clockView"
         android:layout_width="wrap_content"

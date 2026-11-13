@@ -45,6 +45,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
+import kotlin.math.ceil
 import java.io.File
 import java.math.BigInteger
 import java.security.MessageDigest
@@ -52,6 +53,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.Random
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The photoframe. First launch (or long-press on the frame) shows a single
@@ -75,6 +80,8 @@ class MainActivity : Activity() {
     private lateinit var clockView: View
     private lateinit var clockTime: TextView
     private lateinit var clockDate: TextView
+    private lateinit var browseView: BrowseView
+    private lateinit var browseLabel: TextView
 
     private var clockEnabled = false
     @Volatile
@@ -128,7 +135,12 @@ class MainActivity : Activity() {
     // at a time, and this device's heap is too small to hold the whole library
     // (a full 1080x1920 bitmap alone is ~8 MB).
     private val bitmapCache = LruCache<String, Bitmap>(2)
+
+    @Volatile
     private var currentUrl: String? = null
+
+    /** The photo actually on screen (UI thread only). */
+    private var screenUrl: String? = null
 
     // Downloaded originals are kept on disk so they survive restarts and
     // slideshow intervals do not refetch them from the server.
@@ -143,6 +155,69 @@ class MainActivity : Activity() {
 
     /** Stable identity of this installation; generated once and kept over updates. */
     private val frameId: String by lazy { FramePrefs.ensureFrameId(prefs) }
+
+    // ---- Browsing ("offline mode") ------------------------------------------
+    // Swiping or pinching on the frame takes it out of the slideshow. The
+    // slideshow comes back after BROWSE_TIMEOUT_MS without a touch, but that
+    // time only runs while the server can be reached: away from home the frame
+    // stays in browsing mode for as long as it is used.
+
+    @Volatile
+    private var browsing = false
+
+    @Volatile
+    private var browseDeadline = 0L
+
+    /** Set when browsing ends, so the frame loop shows the slideshow again at once. */
+    @Volatile
+    private var resumeSlideshow = false
+
+    /** Last successful exchange with the server (elapsedRealtime). */
+    @Volatile
+    private var lastContactAt = 0L
+
+    // What the frame knows, kept on disk so it is also there without a server:
+    // the slideshow's selection and every photo in gallery order.
+    @Volatile
+    private var knownPlaylist: List<ImageRef> = emptyList()
+
+    @Volatile
+    private var knownLibrary: List<ImageRef> = emptyList()
+
+    // UI thread only.
+    private var browseItems: List<ImageRef> = emptyList()
+    private var browseIndex = -1
+    private var openedFromGrid = false
+    private var gridColumns = BrowseView.MIN_COLUMNS
+    private var browseRequest = 0
+
+    private val browseExecutor = Executors.newSingleThreadExecutor()
+    private val browseHandler = Handler(Looper.getMainLooper())
+    private val browseTimeoutCheck = Runnable { checkBrowseTimeout() }
+    private val hideBrowseLabel = Runnable {
+        browseLabel.animate().alpha(0f).setDuration(400)
+            .withEndAction { browseLabel.visibility = View.GONE }
+    }
+
+    // Thumbnails for the grid, decoded small from the photos on disk.
+    private val thumbCache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(32L * 1024 * 1024).toInt()
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+    private val thumbLoading = HashSet<String>()
+    private val thumbFailed = HashSet<String>()
+    private val thumbExecutor = Executors.newFixedThreadPool(2)
+
+    // Downloads of the same file must not overlap (they share a .part file).
+    private val downloadLock = Any()
+    private val prefetching = AtomicBoolean(false)
+
+    @Volatile
+    private var prefetchAgain = false
+
+    @Volatile
+    private var lastPrefetchAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -163,6 +238,10 @@ class MainActivity : Activity() {
         clockView = findViewById(R.id.clockView)
         clockTime = findViewById(R.id.clockTime)
         clockDate = findViewById(R.id.clockDate)
+        browseView = findViewById(R.id.browseView)
+        browseLabel = findViewById(R.id.browseLabel)
+        browseView.listener = browseListener
+        browseView.thumbs = BrowseView.ThumbSource { ref, width, height -> thumbFor(ref, width, height) }
         pidView.text = "PID: ${Process.myPid()}"
         loadAppVersion()
         versionView.text = appVersionLabel() + "\nFrame ID: " + frameId
@@ -222,12 +301,8 @@ class MainActivity : Activity() {
             }
         }
 
-        // Long-press the frame to reconfigure (change the server URL).
-        frameView.setOnLongClickListener {
-            stopFrame()
-            showConfig()
-            true
-        }
+        // Long-pressing the frame to reconfigure is handled by browseListener,
+        // because the browse layer on top of the photo receives the touches.
 
         val saved = prefs.getString(FramePrefs.SERVER_URL, null)
         if (saved.isNullOrBlank()) showConfig() else startFrame(saved)
@@ -496,7 +571,8 @@ class MainActivity : Activity() {
     }
 
     private fun applyClockVisibility() {
-        val visible = clockEnabled && frameView.visibility == View.VISIBLE
+        val visible = clockEnabled && frameView.visibility == View.VISIBLE &&
+            !browseView.gridVisible
         clockView.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
@@ -588,6 +664,8 @@ class MainActivity : Activity() {
     }
 
     private fun showConfig() {
+        endBrowse()
+        browseView.visibility = View.GONE
         resetNextFrame()
         frameView.visibility = View.GONE
         applyClockVisibility()
@@ -604,10 +682,13 @@ class MainActivity : Activity() {
         statusView.visibility = View.GONE
         resetNextFrame()
         frameView.visibility = View.VISIBLE
+        browseView.visibility = View.VISIBLE
         applyClockVisibility()
         updateBackdropVisibility()
         hideSystemBars(true)
         currentUrl = null
+        loadLists()
+        showLastPhoto()
         client = FrameClient(url, frameId)
         stopFrame()
         running = true
@@ -638,6 +719,9 @@ class MainActivity : Activity() {
         var pendingState: FrameState? = null
         var waitSeconds = LONGPOLL_SECONDS
         var failingSince = 0L
+        var listsVersion = -1L
+        var seenState = false
+        var lastSingleId: Long? = null
 
         while (running) {
             if (!networkAvailable()) {
@@ -651,6 +735,7 @@ class MainActivity : Activity() {
                 val state = pendingState ?: client!!.fetchState()
                 pendingState = null
                 failingSince = 0L
+                lastContactAt = SystemClock.elapsedRealtime()
                 stateVersion = state.version
                 stateUpdateId = state.update?.id ?: 0L
                 stateUpdateStatus = state.update?.status ?: ""
@@ -681,8 +766,30 @@ class MainActivity : Activity() {
                 }
                 enabledTransitions = state.transitions
                 state.update?.let { maybeInstallUpdate(it) }
+                if (state.version != listsVersion) {
+                    listsVersion = state.version
+                    updateKnownLists(state)
+                } else if (SystemClock.elapsedRealtime() - lastPrefetchAt > PREFETCH_RETRY_MS) {
+                    startPrefetch(state.library != null)
+                }
+
+                // "Show on frame" from the web page wins over browsing.
+                val singleId = if (state.mode == "single") state.single?.id else null
+                if (seenState && singleId != null && singleId != lastSingleId && browsing) {
+                    browsing = false
+                    runOnUiThread { endBrowse() }
+                }
+                seenState = true
+                lastSingleId = singleId
+                if (resumeSlideshow) {
+                    resumeSlideshow = false
+                    nextSlideAt = 0L
+                }
+
                 val single = state.single
-                if (state.mode == "single" && single != null) {
+                if (browsing) {
+                    // Leave the screen to the viewer; keep polling the server.
+                } else if (state.mode == "single" && single != null) {
                     if (showImage(single)) lastUrl = single.url
                 } else {
                     if (state.version != lastVersion) {
@@ -695,6 +802,7 @@ class MainActivity : Activity() {
                     if (images.isEmpty()) {
                         showPlaceholder()
                     } else if (SystemClock.elapsedRealtime() >= nextSlideAt) {
+                        if (nextIndex >= images.size) nextIndex = 0
                         val next = if (state.random) {
                             randomImage(images, lastUrl)
                         } else {
@@ -722,6 +830,9 @@ class MainActivity : Activity() {
                             .coerceIn(1, LONGPOLL_SECONDS)
                     }
                 }
+                // Check back often while browsing, so the slideshow returns
+                // promptly when browsing ends.
+                if (browsing) waitSeconds = minOf(waitSeconds, BROWSE_POLL_SECONDS)
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
@@ -756,6 +867,7 @@ class MainActivity : Activity() {
                     stateRestartId,
                     waitSeconds,
                 )
+                lastContactAt = SystemClock.elapsedRealtime()
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
@@ -1004,7 +1116,7 @@ class MainActivity : Activity() {
             currentUrl = ref.url
             prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
             val backdrop = if (blurEnabled) blurredBackdrop(bmp) else null
-            runOnUiThread { transitionTo(bmp, backdrop) }
+            runOnUiThread { if (!browsing) transitionTo(bmp, backdrop, ref.url) }
             try {
                 client!!.reportShown(ref.id)
             } catch (e: Exception) {
@@ -1023,7 +1135,7 @@ class MainActivity : Activity() {
             BitmapFactory.decodeFile(file.path)?.let { return it }
             file.delete() // corrupt cached copy: fetch it again
         }
-        client!!.downloadFile(ref.url, file)
+        ensureFile(ref)
         return BitmapFactory.decodeFile(file.path)
             ?: throw java.io.IOException("undecodable image")
     }
@@ -1188,6 +1300,343 @@ class MainActivity : Activity() {
             resetNextFrame()
             setBackdrop(null)
             frameView.setImageBitmap(null)
+            screenUrl = null
+        }
+    }
+
+    private val browseListener = object : BrowseView.Listener {
+        override fun onBrowseSwipe(step: Int) {
+            if (!beginBrowse()) return
+            val size = browseItems.size
+            val index = if (browseIndex < 0) {
+                if (step > 0) 0 else size - 1
+            } else {
+                ((browseIndex + step) % size + size) % size
+            }
+            showBrowsed(index, if (step > 0) Transition.SLIDE_LEFT else Transition.SLIDE_RIGHT)
+        }
+
+        override fun onBrowsePinchOut() {
+            if (beginBrowse()) openGrid()
+        }
+
+        override fun onBrowseOpen(index: Int) {
+            touchBrowse()
+            closeGrid()
+            openedFromGrid = true
+            showBrowsed(index, Transition.ZOOM_OUT)
+        }
+
+        override fun onBrowseLongPress() {
+            endBrowse()
+            stopFrame()
+            showConfig()
+        }
+
+        override fun onBrowseActivity() {
+            if (browsing) touchBrowse()
+        }
+    }
+
+    private fun serverReachable(): Boolean =
+        lastContactAt > 0L && SystemClock.elapsedRealtime() - lastContactAt < CONTACT_FRESH_MS
+
+    private fun isCached(ref: ImageRef): Boolean {
+        val file = imageFile(ref.url)
+        return file.isFile && file.length() > 0
+    }
+
+    /** The photo's file on disk, downloaded first if needed. */
+    private fun ensureFile(ref: ImageRef): File {
+        val file = imageFile(ref.url)
+        synchronized(downloadLock) {
+            if (!(file.isFile && file.length() > 0)) {
+                val c = client ?: throw java.io.IOException("no server configured")
+                c.downloadFile(ref.url, file)
+            }
+        }
+        return file
+    }
+
+    /**
+     * What browsing walks through: the slideshow's selection, then every other
+     * photo in gallery order. Without a server only photos on the tablet count.
+     */
+    private fun browseSequence(): List<ImageRef> {
+        var refs = (knownPlaylist + knownLibrary).distinctBy { it.url }
+        if (refs.isEmpty()) {
+            // Never reached a server with this version: use what is on disk.
+            refs = imageDir.listFiles()
+                ?.filter { it.isFile && it.length() > 0 && !it.name.endsWith(".part") }
+                ?.sortedBy { it.lastModified() }
+                ?.map { ImageRef(-1L, "/images/" + it.name) }
+                ?: emptyList()
+        }
+        return if (serverReachable()) refs else refs.filter { isCached(it) }
+    }
+
+    /** Enter browsing (if not browsing yet); false when there is nothing to show. */
+    private fun beginBrowse(): Boolean {
+        if (!browsing) {
+            browseItems = browseSequence()
+            if (browseItems.isEmpty()) return false
+            val url = screenUrl
+            browseIndex = browseItems.indexOfFirst { it.url == url }
+            openedFromGrid = false
+            browsing = true
+            statusView.visibility = View.GONE
+            browseHandler.removeCallbacks(browseTimeoutCheck)
+            browseHandler.postDelayed(browseTimeoutCheck, BROWSE_CHECK_MS)
+        }
+        touchBrowse()
+        return true
+    }
+
+    private fun touchBrowse() {
+        browseDeadline = SystemClock.elapsedRealtime() + BROWSE_TIMEOUT_MS
+    }
+
+    private fun checkBrowseTimeout() {
+        if (!browsing) return
+        val now = SystemClock.elapsedRealtime()
+        // Without the server the clock stands still.
+        if (!serverReachable()) browseDeadline = maxOf(browseDeadline, now + BROWSE_TIMEOUT_MS)
+        if (now >= browseDeadline) {
+            endBrowse()
+        } else {
+            browseHandler.postDelayed(browseTimeoutCheck, BROWSE_CHECK_MS)
+        }
+    }
+
+    /** Leave browsing; the frame loop picks up the slideshow again. */
+    private fun endBrowse() {
+        browseHandler.removeCallbacks(browseTimeoutCheck)
+        browseRequest++
+        val wasBrowsing = browsing
+        browsing = false
+        openedFromGrid = false
+        closeGrid()
+        browseHandler.removeCallbacks(hideBrowseLabel)
+        browseLabel.animate().cancel()
+        browseLabel.visibility = View.GONE
+        if (wasBrowsing) resumeSlideshow = true
+    }
+
+    private fun openGrid() {
+        openedFromGrid = false
+        thumbFailed.clear() // retry photos that may have arrived since
+        browseView.showGrid(browseItems, browseIndex, gridColumns)
+        browseHandler.removeCallbacks(hideBrowseLabel)
+        browseLabel.visibility = View.GONE
+        applyClockVisibility()
+    }
+
+    private fun closeGrid() {
+        if (browseView.gridVisible) {
+            gridColumns = browseView.columns
+            browseView.hideGrid()
+        }
+        applyClockVisibility()
+    }
+
+    /** Show browseItems[index] with the given transition. */
+    private fun showBrowsed(index: Int, kind: Transition) {
+        if (index !in browseItems.indices) return
+        browseIndex = index
+        val ref = browseItems[index]
+        showBrowseLabel("${index + 1} / ${browseItems.size}")
+        val request = ++browseRequest
+        browseExecutor.execute {
+            val bmp = try {
+                bitmapCache.get(ref.url) ?: loadBitmap(ref).also { bitmapCache.put(ref.url, it) }
+            } catch (e: Exception) {
+                null
+            }
+            val backdrop = if (bmp != null && blurEnabled) blurredBackdrop(bmp) else null
+            runOnUiThread {
+                if (bmp != null && browsing && request == browseRequest) {
+                    currentUrl = ref.url
+                    prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
+                    transitionTo(bmp, backdrop, ref.url, kind, BROWSE_TRANSITION_MS)
+                }
+            }
+            if (bmp != null && ref.id >= 0 && serverReachable()) {
+                try {
+                    client?.reportShown(ref.id)
+                } catch (e: Exception) {
+                    // Best effort.
+                }
+            }
+        }
+    }
+
+    private fun showBrowseLabel(text: String) {
+        browseHandler.removeCallbacks(hideBrowseLabel)
+        browseLabel.animate().cancel()
+        browseLabel.text = text
+        browseLabel.alpha = 1f
+        browseLabel.visibility = View.VISIBLE
+        browseHandler.postDelayed(hideBrowseLabel, BROWSE_LABEL_MS)
+    }
+
+    /** Grid thumbnail from the cache, or null while it is being decoded. UI thread. */
+    private fun thumbFor(ref: ImageRef, width: Int, height: Int): Bitmap? {
+        val key = "${ref.url}|$width"
+        val cached = thumbCache.get(key)
+        if (cached == null && key !in thumbFailed && thumbLoading.add(key)) {
+            thumbExecutor.execute {
+                val bmp = try {
+                    loadThumb(ref, width, height)
+                } catch (e: Exception) {
+                    null
+                }
+                runOnUiThread {
+                    thumbLoading.remove(key)
+                    if (bmp == null) thumbFailed.add(key) else thumbCache.put(key, bmp)
+                    browseView.invalidate()
+                }
+            }
+        }
+        return cached
+    }
+
+    /** Decode a photo just big enough to cover a width x height cell. */
+    private fun loadThumb(ref: ImageRef, width: Int, height: Int): Bitmap? {
+        val file = when {
+            isCached(ref) -> imageFile(ref.url)
+            serverReachable() -> ensureFile(ref)
+            else -> return null
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val scale = maxOf(
+            width.toFloat() / bounds.outWidth,
+            height.toFloat() / bounds.outHeight,
+        )
+        var sample = 1
+        while (sample * 2 <= 1f / scale) sample *= 2
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        val decoded = BitmapFactory.decodeFile(file.path, options) ?: return null
+        val targetW = ceil(bounds.outWidth * scale).toInt().coerceAtLeast(1)
+        val targetH = ceil(bounds.outHeight * scale).toInt().coerceAtLeast(1)
+        if (decoded.width <= targetW * 5 / 4) return decoded
+        val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
+    }
+
+    /** Put the last photo on screen at start, before (or without) the server. */
+    private fun showLastPhoto() {
+        if (screenUrl != null) return
+        val url = prefs.getString(FramePrefs.LAST_SHOWN_URL, null) ?: return
+        val file = imageFile(url)
+        if (!file.isFile) return
+        Thread {
+            val bmp = BitmapFactory.decodeFile(file.path) ?: return@Thread
+            runOnUiThread {
+                if (screenUrl == null && frameView.visibility == View.VISIBLE) {
+                    screenUrl = url
+                    frameView.setImageBitmap(bmp)
+                }
+            }
+        }.start()
+    }
+
+    private fun updateKnownLists(state: FrameState) {
+        knownPlaylist = state.images
+        knownLibrary = state.library ?: state.images
+        saveLists()
+        startPrefetch(state.library != null)
+    }
+
+    private fun refsToJson(refs: List<ImageRef>): JSONArray {
+        val array = JSONArray()
+        for (ref in refs) array.put(JSONObject().put("id", ref.id).put("url", ref.url))
+        return array
+    }
+
+    private fun refsFromJson(array: JSONArray?): List<ImageRef> {
+        if (array == null) return emptyList()
+        return (0 until array.length()).map { ImageRef.fromJson(array.getJSONObject(it)) }
+    }
+
+    private fun saveLists() {
+        try {
+            val json = JSONObject()
+                .put("playlist", refsToJson(knownPlaylist))
+                .put("library", refsToJson(knownLibrary))
+            val file = File(filesDir, LISTS_FILE)
+            val tmp = File(filesDir, "$LISTS_FILE.tmp")
+            tmp.writeText(json.toString())
+            if (!tmp.renameTo(file)) tmp.delete()
+        } catch (e: Exception) {
+            Log.w("MemoryLink", "Could not save image lists", e)
+        }
+    }
+
+    private fun loadLists() {
+        try {
+            val file = File(filesDir, LISTS_FILE)
+            if (!file.isFile) return
+            val json = JSONObject(file.readText())
+            knownPlaylist = refsFromJson(json.optJSONArray("playlist"))
+            knownLibrary = refsFromJson(json.optJSONArray("library"))
+        } catch (e: Exception) {
+            Log.w("MemoryLink", "Could not read image lists", e)
+        }
+    }
+
+    /**
+     * Download every known photo in the background, so the frame can show them
+     * all when it is away from home. With [cleanUp], photos that are no longer
+     * on the server are removed from the tablet afterwards.
+     */
+    private fun startPrefetch(cleanUp: Boolean) {
+        lastPrefetchAt = SystemClock.elapsedRealtime()
+        if (!prefetching.compareAndSet(false, true)) {
+            prefetchAgain = true
+            return
+        }
+        val thread = Thread({
+            try {
+                do {
+                    prefetchAgain = false
+                    prefetchAll(cleanUp)
+                } while (prefetchAgain && running)
+            } finally {
+                prefetching.set(false)
+            }
+        }, "prefetch")
+        thread.priority = Thread.MIN_PRIORITY
+        thread.start()
+    }
+
+    private fun prefetchAll(cleanUp: Boolean) {
+        val refs = (knownPlaylist + knownLibrary).distinctBy { it.url }
+        for (ref in refs) {
+            if (!running) return
+            if (isCached(ref)) continue
+            if (imageDir.usableSpace < MIN_FREE_BYTES) return
+            try {
+                ensureFile(ref)
+            } catch (e: Exception) {
+                return // server gone; try again later
+            }
+        }
+        if (cleanUp) removeUnusedFiles(refs)
+    }
+
+    private fun removeUnusedFiles(refs: List<ImageRef>) {
+        val keep = HashSet<String>()
+        for (ref in refs) keep.add(imageFile(ref.url).name)
+        prefs.getString(FramePrefs.LAST_SHOWN_URL, null)?.let { keep.add(imageFile(it).name) }
+        val cutoff = System.currentTimeMillis() - 3_600_000L
+        imageDir.listFiles()?.forEach { file ->
+            if (file.isFile && file.name !in keep && file.lastModified() < cutoff) file.delete()
         }
     }
 
@@ -1205,7 +1654,14 @@ class MainActivity : Activity() {
     }
 
     /** Animate the new bitmap in over the old one with a random effect. */
-    private fun transitionTo(bmp: Bitmap, backdrop: Bitmap?) {
+    private fun transitionTo(
+        bmp: Bitmap,
+        backdrop: Bitmap?,
+        url: String?,
+        forced: Transition? = null,
+        durationMs: Long = 0L,
+    ) {
+        screenUrl = url
         resetNextFrame()
         nextFrameView.setBackgroundColor(if (blurEnabled) Color.TRANSPARENT else Color.BLACK)
         if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
@@ -1213,8 +1669,8 @@ class MainActivity : Activity() {
         nextFrameView.visibility = View.VISIBLE
 
         val kinds = transitionKinds()
-        val kind = kinds[random.nextInt(kinds.size)]
-        val duration = 550L + random.nextInt(450)
+        val kind = forced ?: kinds[random.nextInt(kinds.size)]
+        val duration = if (durationMs > 0L) durationMs else 550L + random.nextInt(450)
         val width = (if (frameView.width > 0) frameView.width
             else resources.displayMetrics.widthPixels).toFloat()
         val height = (if (frameView.height > 0) frameView.height
@@ -1279,7 +1735,7 @@ class MainActivity : Activity() {
     private fun setStatus(msg: String) {
         runOnUiThread {
             statusView.text = msg
-            statusView.visibility = View.VISIBLE
+            statusView.visibility = if (browsing) View.GONE else View.VISIBLE
         }
     }
 
@@ -1316,7 +1772,29 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         clockHandler.removeCallbacks(clockTicker)
+        browseHandler.removeCallbacksAndMessages(null)
         stopFrame()
+        browseExecutor.shutdownNow()
+        thumbExecutor.shutdownNow()
+    }
+
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        when {
+            // From the grid back to the photo.
+            browseView.gridVisible -> {
+                touchBrowse()
+                closeGrid()
+            }
+            // From a photo opened in the grid back to the grid.
+            browsing && openedFromGrid -> {
+                touchBrowse()
+                openGrid()
+            }
+            browsing -> endBrowse()
+            else -> super.onBackPressed()
+        }
     }
 
     companion object {
@@ -1347,5 +1825,16 @@ class MainActivity : Activity() {
         private const val BLUETOOTH_SCAN_MS = 10_000L
         private const val BLUETOOTH_INTERVAL_MS = 120_000L
         private const val BLUETOOTH_ENABLE_RETRY_MS = 30_000L
+
+        /** Browsing ends after this long without a touch, while the server is reachable. */
+        private const val BROWSE_TIMEOUT_MS = 3 * 60_000L
+        private const val BROWSE_CHECK_MS = 5_000L
+        private const val BROWSE_POLL_SECONDS = 5
+        private const val BROWSE_TRANSITION_MS = 350L
+        private const val BROWSE_LABEL_MS = 2_000L
+        private const val CONTACT_FRESH_MS = 30_000L
+        private const val PREFETCH_RETRY_MS = 10 * 60_000L
+        private const val MIN_FREE_BYTES = 200L * 1024 * 1024
+        private const val LISTS_FILE = "image-lists.json"
     }
 }
