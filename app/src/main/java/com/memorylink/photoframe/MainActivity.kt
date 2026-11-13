@@ -1052,8 +1052,11 @@ class MainActivity : Activity() {
 
         try {
             setStatus("Downloading update…")
-            val file = File(cacheDir, UPDATE_FILE)
+            val file = File(filesDir, UPDATE_FILE)
             client!!.downloadFile(update.url, file)
+            if (!file.isFile || file.length() == 0L) {
+                throw java.io.IOException("downloaded update is missing")
+            }
             val expected = update.sha256
             if (!expected.isNullOrBlank() && !sha256(file).equals(expected, ignoreCase = true)) {
                 file.delete()
