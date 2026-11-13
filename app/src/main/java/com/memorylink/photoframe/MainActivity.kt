@@ -261,6 +261,16 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /**
+     * The last photo, drawn into the picture frame on the splash artwork.
+     *
+     * splash_overlay.png is the artwork with the frame's opening cut out, so
+     * the photo is drawn first and the overlay on top of it. The photo is laid
+     * out on a flat canvas with the opening's proportions and that canvas is
+     * warped onto the opening, so the picture is never stretched: it fills the
+     * opening when only a little has to be trimmed for that, and is otherwise
+     * shown whole on a soft blurred copy of itself.
+     */
     private fun composeSplash(photoFile: File): Bitmap? {
         val overlayOptions = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -268,60 +278,105 @@ class MainActivity : Activity() {
         val overlay = BitmapFactory.decodeResource(
             resources, R.drawable.splash_overlay, overlayOptions
         ) ?: return null
-        val photoOptions = BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val photo = BitmapFactory.decodeFile(photoFile.path, photoOptions)
-            ?: run {
-                overlay.recycle()
-                return null
-            }
-
         val width = overlay.width
         val height = overlay.height
-        val quad = floatArrayOf(
-            0.2166667f * width, 0.5682292f * height,
-            0.7722222f * width, 0.5729167f * height,
-            0.7870370f * width, 0.7781250f * height,
-            0.2351852f * width, 0.7791667f * height,
-        )
+
+        val quad = FloatArray(8) { i ->
+            SPLASH_OPENING[i] * (if (i % 2 == 0) width else height)
+        }
+        fun side(a: Int, b: Int) = Math.hypot(
+            (quad[2 * a] - quad[2 * b]).toDouble(),
+            (quad[2 * a + 1] - quad[2 * b + 1]).toDouble(),
+        ).toFloat()
+        val openWidth = (side(0, 1) + side(3, 2)) / 2f
+        val openHeight = (side(0, 3) + side(1, 2)) / 2f
+
+        // Let the picture run a few pixels under the mat, so the anti-aliased
+        // edge of the opening never shows a gap.
         val cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4f
         val cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4f
-        val expand = 1.012f
         for (i in quad.indices step 2) {
-            quad[i] = cx + (quad[i] - cx) * expand
-            quad[i + 1] = cy + (quad[i + 1] - cy) * expand
+            val dx = quad[i] - cx
+            val dy = quad[i + 1] - cy
+            val len = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+            quad[i] += dx / len * SPLASH_BLEED_PX
+            quad[i + 1] += dy / len * SPLASH_BLEED_PX
         }
 
-        // Center-crop the photo to the opening's aspect, then warp it into place.
-        val avgWidth = ((quad[2] - quad[0]) + (quad[6] - quad[4])) / 2f
-        val avgHeight = ((quad[7] - quad[1]) + (quad[5] - quad[3])) / 2f
-        val targetAspect = avgWidth / avgHeight
-        var cropW = photo.width.toFloat()
-        var cropH = cropW / targetAspect
-        if (cropH > photo.height) {
-            cropH = photo.height.toFloat()
-            cropW = cropH * targetAspect
+        // Flat canvas with the opening's proportions, oversampled a little so
+        // the warp stays sharp.
+        val canvasW = Math.round(openWidth * SPLASH_OVERSAMPLE)
+        val canvasH = Math.round(openHeight * SPLASH_OVERSAMPLE)
+        val photo = decodeSampled(photoFile, canvasW, canvasH) ?: run {
+            overlay.recycle()
+            return null
         }
-        val sx = (photo.width - cropW) / 2f
-        val sy = (photo.height - cropH) / 2f
-        val src = floatArrayOf(
-            sx, sy,
-            sx + cropW, sy,
-            sx + cropW, sy + cropH,
-            sx, sy + cropH,
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val content = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
+        val contentCanvas = Canvas(content)
+        contentCanvas.drawColor(Color.BLACK)
+
+        val photoAspect = photo.width.toFloat() / photo.height
+        val openAspect = canvasW.toFloat() / canvasH
+        // Share of the photo that survives when it is cropped to the opening.
+        val kept = minOf(photoAspect / openAspect, openAspect / photoAspect)
+        val fill = kept >= SPLASH_FILL_MIN_KEPT
+        if (!fill) {
+            val soft = blurredBackdrop(photo)
+            contentCanvas.drawBitmap(soft, centered(soft, canvasW, canvasH, true), paint)
+            soft.recycle()
+            contentCanvas.drawColor(0x66000000)
+        }
+        contentCanvas.drawBitmap(photo, centered(photo, canvasW, canvasH, fill), paint)
+        photo.recycle()
+
+        val warp = Matrix()
+        warp.setPolyToPoly(
+            floatArrayOf(
+                0f, 0f,
+                canvasW.toFloat(), 0f,
+                canvasW.toFloat(), canvasH.toFloat(),
+                0f, canvasH.toFloat(),
+            ),
+            0, quad, 0, 4,
         )
-
-        val matrix = Matrix()
-        matrix.setPolyToPoly(src, 0, quad, 0, 4)
         val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(result)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        canvas.drawBitmap(photo, matrix, paint)
+        canvas.drawBitmap(content, warp, paint)
         canvas.drawBitmap(overlay, 0f, 0f, null)
-        photo.recycle()
+        content.recycle()
         overlay.recycle()
         return result
+    }
+
+    /** Matrix that centres [bitmap] in a w x h box, covering it or fitting inside. */
+    private fun centered(bitmap: Bitmap, w: Int, h: Int, cover: Boolean): Matrix {
+        val sx = w.toFloat() / bitmap.width
+        val sy = h.toFloat() / bitmap.height
+        val scale = if (cover) maxOf(sx, sy) else minOf(sx, sy)
+        return Matrix().apply {
+            setScale(scale, scale)
+            postTranslate(
+                (w - bitmap.width * scale) / 2f,
+                (h - bitmap.height * scale) / 2f,
+            )
+        }
+    }
+
+    /** Decode an image file at reduced size, but no smaller than w x h. */
+    private fun decodeSampled(file: File, w: Int, h: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= w && bounds.outHeight / (sample * 2) >= h) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = sample
+        }
+        return BitmapFactory.decodeFile(file.path, options)
     }
 
     @Suppress("DEPRECATION")
@@ -1259,6 +1314,23 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        /**
+         * Corners of the picture opening in splash_overlay.png (top-left,
+         * top-right, bottom-right, bottom-left), as x,y fractions of the
+         * artwork's size. Change these together with the artwork.
+         */
+        private val SPLASH_OPENING = floatArrayOf(
+            0.210975f, 0.573404f,
+            0.756449f, 0.570685f,
+            0.796272f, 0.772290f,
+            0.243240f, 0.786483f,
+        )
+        private const val SPLASH_BLEED_PX = 3f
+        private const val SPLASH_OVERSAMPLE = 1.5f
+
+        /** Crop the photo to fill the opening only if at least this much of it stays visible. */
+        private const val SPLASH_FILL_MIN_KEPT = 0.75f
+
         private const val POLL_MS = 6000L
         private const val NETWORK_RETRY_MS = 2000L
         private const val SERVER_GRACE_MS = 20000L
