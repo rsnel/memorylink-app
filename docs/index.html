@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemoryLink — a photo frame you fill from far away</title>
+<meta name="description" content="MemoryLink turns an old Android tablet into a photo frame that you fill and control from your own phone or computer. Nothing to learn for the person who has it on the dresser.">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:title" content="MemoryLink — a photo frame you fill from far away">
+<meta property="og:description" content="Share photos with people who aren't good with computers. They just look; you do the rest.">
+<meta property="og:image" content="img/frame-sunset.webp">
+<style>
+  :root {
+    --paper: #fbf7f1;
+    --paper2: #f3ebdf;
+    --ink: #2b2420;
+    --soft: #6f625a;
+    --wood: #8a5a3b;
+    --accent: #c4572e;
+    --accent-soft: #f6dccf;
+    --dark: #14161c;
+    --line: #e4d8c8;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 18px/1.6 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  h1, h2, h3, nav, .eyebrow, .btn, figcaption, .step-n, footer, .small {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); }
+  img { max-width: 100%; height: auto; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  nav {
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(251,247,241,.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+    font-size: 15px;
+  }
+  nav .wrap { display: flex; align-items: center; gap: 22px; height: 56px; }
+  nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ink); text-decoration: none; margin-right: auto; }
+  nav .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  nav a { color: var(--soft); text-decoration: none; }
+  nav a:hover { color: var(--accent); }
+  @media (max-width: 720px) { nav a:not(.brand):not(.gh) { display: none; } }
+
+  .btn {
+    display: inline-block;
+    padding: 12px 22px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 16px;
+  }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1.5px solid var(--ink); }
+  .btn:hover { filter: brightness(1.08); }
+
+  /* hero */
+  .hero { padding: 64px 0 40px; }
+  .hero .wrap { display: grid; grid-template-columns: 1fr 1.1fr; gap: 48px; align-items: center; }
+  .eyebrow { color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.08; margin: 10px 0 18px; letter-spacing: -.02em; }
+  .lead { font-size: 21px; color: var(--soft); margin: 0 0 28px; }
+  .hero .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .hero figure { margin: 0; }
+  .hero figure img { border-radius: 20px; box-shadow: 0 30px 60px -30px rgba(80,40,10,.55); }
+  @media (max-width: 860px) {
+    .hero .wrap { grid-template-columns: 1fr; }
+    .hero figure { order: -1; }
+  }
+
+  section { padding: 72px 0; }
+  section.alt { background: var(--paper2); }
+  section.dark { background: var(--dark); color: #e9e6e1; }
+  section.dark .muted { color: #a9a39b; }
+  h2 { font-size: clamp(28px, 3.4vw, 38px); line-height: 1.15; margin: 0 0 14px; letter-spacing: -.01em; }
+  h3 { font-size: 19px; margin: 0 0 6px; }
+  .intro { max-width: 720px; color: var(--soft); font-size: 19px; margin: 0 0 40px; }
+  section.dark .intro { color: #b8b2aa; }
+
+  /* who it's for */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+  .card .icon { font-size: 30px; line-height: 1; margin-bottom: 12px; }
+  .card p { margin: 0; color: var(--soft); font-size: 17px; }
+  @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } }
+
+  /* phone call story */
+  .story { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  .story-visual { display: grid; grid-template-columns: 1fr 1.6fr; gap: 20px; align-items: center; }
+  .phone {
+    border: 10px solid #111;
+    border-radius: 36px;
+    overflow: hidden;
+    background: #111;
+    box-shadow: 0 20px 40px -20px rgba(0,0,0,.6);
+    aspect-ratio: 390 / 600;
+  }
+  .phone img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+  .arrow { text-align: center; font-family: system-ui, sans-serif; color: var(--accent); font-weight: 700; font-size: 14px; }
+  .story-visual figure { margin: 0; }
+  .story-visual figure img { border-radius: 14px; }
+  .quote {
+    border-left: 4px solid var(--accent);
+    padding: 4px 0 4px 18px;
+    margin: 24px 0;
+    font-style: italic;
+    color: var(--soft);
+  }
+  ol.steps { list-style: none; padding: 0; margin: 20px 0 0; counter-reset: s; }
+  ol.steps li { counter-increment: s; position: relative; padding-left: 44px; margin-bottom: 14px; }
+  ol.steps li::before {
+    content: counter(s);
+    position: absolute; left: 0; top: 2px;
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font: 700 15px/30px system-ui, sans-serif; text-align: center;
+  }
+  @media (max-width: 900px) {
+    .story { grid-template-columns: 1fr; }
+  }
+
+  /* how it works */
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 14px; align-items: stretch; margin-top: 8px; }
+  .flow .node { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; text-align: center; }
+  .flow .node .icon { font-size: 34px; }
+  .flow .node p { margin: 6px 0 0; color: var(--soft); font-size: 16px; }
+  .flow .link { align-self: center; font-family: system-ui, sans-serif; color: var(--accent); font-size: 26px; }
+  @media (max-width: 860px) {
+    .flow { grid-template-columns: 1fr; }
+    .flow .link { transform: rotate(90deg); justify-self: center; }
+  }
+
+  /* screenshots */
+  .shot { margin: 0 0 56px; }
+  .shot:last-child { margin-bottom: 0; }
+  .shot img {
+    border-radius: 12px;
+    border: 1px solid #2b2f3a;
+    box-shadow: 0 30px 60px -30px rgba(0,0,0,.8);
+  }
+  .shot-row { display: grid; grid-template-columns: 1fr 2.2fr; gap: 40px; align-items: center; }
+  .shot-row.flip { grid-template-columns: 2.2fr 1fr; }
+  .shot-row.flip .text { order: 2; }
+  .shot-row p { margin: 0 0 10px; }
+  @media (max-width: 860px) {
+    .shot-row, .shot-row.flip { grid-template-columns: 1fr; }
+    .shot-row.flip .text { order: 0; }
+  }
+  figcaption { font-size: 13px; color: var(--soft); margin-top: 10px; text-align: center; }
+  section.dark figcaption { color: #8d877f; }
+
+  /* frame features */
+  .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px 40px; }
+  .feature-grid div { padding-left: 16px; border-left: 3px solid var(--line); }
+  .feature-grid p { margin: 0; color: var(--soft); font-size: 17px; }
+  @media (max-width: 760px) { .feature-grid { grid-template-columns: 1fr; } }
+  .frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 40px; }
+  .frames img { border-radius: 12px; }
+  @media (max-width: 760px) { .frames { grid-template-columns: 1fr; } }
+
+  /* setup */
+  .setup { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .setup .card { padding: 22px; }
+  .step-n { color: var(--accent); font-weight: 800; font-size: 14px; letter-spacing: .05em; }
+  code {
+    font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--paper2); padding: 1px 6px; border-radius: 5px;
+  }
+  @media (max-width: 960px) { .setup { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .setup { grid-template-columns: 1fr; } }
+
+  .cta { text-align: center; }
+  .cta .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 24px; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--soft); font-size: 14px; }
+  footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="favicon.png" alt="">MemoryLink</a>
+    <a href="#why">Why</a>
+    <a href="#phone">On the phone</a>
+    <a href="#how">How it works</a>
+    <a href="#webapp">Web app</a>
+    <a href="#setup">Set up</a>
+    <a class="gh" href="https://github.com/rsnel/memorylink-app">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">An open-source photo frame</div>
+      <h1>Share your photos with someone who never touches a computer.</h1>
+      <p class="lead">
+        MemoryLink turns an Android tablet into a photo frame that you fill from
+        your own phone or computer, wherever you are. The person who has it on
+        their dresser doesn't need to do anything. They just look.
+      </p>
+      <div class="actions">
+        <a class="btn" href="#setup">Set one up</a>
+        <a class="btn ghost" href="#phone">See it in action</a>
+      </div>
+    </div>
+    <figure>
+      <img src="img/frame-sunset.webp" alt="A wooden photo frame on a table, showing a photo of a sunset at the beach" width="813" height="552">
+    </figure>
+  </div>
+</header>
+
+<section id="why" class="alt">
+  <div class="wrap">
+    <h2>Made for the people we love who are not good with computers</h2>
+    <p class="intro">
+      Grandparents, an aunt in a care home, a friend who never got used to a
+      smartphone: they miss out on the photos everyone else shares in group
+      chats and on social media. MemoryLink brings those photos to them without
+      asking them to learn anything.
+    </p>
+    <div class="cards">
+      <div class="card">
+        <div class="icon">🖼️</div>
+        <h3>Nothing to learn</h3>
+        <p>There are no menus, no accounts and no buttons to find. The frame starts
+          by itself when it is switched on and simply shows photos, all day long.</p>
+      </div>
+      <div class="card">
+        <div class="icon">📲</div>
+        <h3>You do the work, from anywhere</h3>
+        <p>Upload, sort and choose photos from a web page on your own phone or
+          computer. The frame picks up the change within moments, wherever it is.</p>
+      </div>
+      <div class="card">
+        <div class="icon">🔒</div>
+        <h3>Your photos stay yours</h3>
+        <p>The photos live on your own small server, not on a company's cloud.
+          No subscription, no ads, and the code is open source.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="phone">
+  <div class="wrap story">
+    <div>
+      <div class="eyebrow">The part everyone loves</div>
+      <h2>“Look at the frame, Mum — that's the garden now.”</h2>
+      <p>
+        You are on the phone with your mother and want to show her something. With
+        a smartphone that would mean explaining how to open a message, find the
+        photo, make it bigger…
+      </p>
+      <p>
+        With MemoryLink you open the web page on your own phone, tap <b>Show on
+        frame</b> under a photo, and a moment later it is on the frame next to her
+        chair. You talk about it together, and when you are done, start the
+        slideshow again.
+      </p>
+      <ol class="steps">
+        <li>Open the MemoryLink page on your phone while you talk.</li>
+        <li>Tap <b>Show on frame</b> under the photo you want to show.</li>
+        <li>The frame switches to that photo right away and stays on it.</li>
+        <li>Tap <b>Start slideshow</b> afterwards, and the frame carries on as before.</li>
+      </ol>
+      <p class="quote">The page tells you that the frame is online and marks the photo
+        that is on it at that moment, so you know she is looking at the same picture.</p>
+    </div>
+    <div class="story-visual">
+      <div>
+        <div class="phone"><img src="img/phone-show.webp" alt="The MemoryLink web page on a phone, with the message: Showing Grandma's garden on the frame" loading="lazy"></div>
+      </div>
+      <figure>
+        <div class="arrow">a moment later →</div>
+        <img src="img/frame-garden.webp" alt="The photo frame now showing the photo of grandma's garden" loading="lazy">
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="alt">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="intro">
+      MemoryLink has two parts: a small server with a web page where you manage the
+      photos, and an app that turns an Android tablet into the frame. The frame
+      keeps a connection open to the server, so it hears about every change
+      straight away. Photos are stored on the tablet after the first time, so they
+      appear without waiting.
+    </p>
+    <div class="flow">
+      <div class="node"><div class="icon">💻📱</div><h3>You</h3>
+        <p>Upload, tag and choose photos in the web page, on any computer or phone.</p></div>
+      <div class="link">→</div>
+      <div class="node"><div class="icon">🗄️</div><h3>Your server</h3>
+        <p><a href="https://github.com/rsnel/memorylink-server">memorylink-server</a>: stores the photos and tells the frame what to show.</p></div>
+      <div class="link">→</div>
+      <div class="node"><div class="icon">🖼️</div><h3>The frame</h3>
+        <p><a href="https://github.com/rsnel/memorylink-app">memorylink-app</a> on an Android tablet in a nice frame.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="webapp" class="dark">
+  <div class="wrap">
+    <h2>A web page to manage it all</h2>
+    <p class="intro">Everything is done from one page in the browser. It works on a big
+      screen as well as on a phone.</p>
+
+    <figure class="shot">
+      <img src="img/web-gallery.webp" alt="The MemoryLink web page: slideshow controls, a row of tags and a gallery of photos" loading="lazy" width="1600" height="1025">
+      <figcaption>All photos at a glance. The green badge shows the one that is on the frame right now.</figcaption>
+    </figure>
+
+    <div class="shot shot-row">
+      <div class="text">
+        <h3>Tag a whole group at once</h3>
+        <p class="muted">Click photos to select them, type a tag and press <b>Add tag</b>.
+          Newly uploaded photos are selected straight away, so a new batch is tagged
+          in one go. You can also give every upload a tag automatically, such as
+          <code>new</code> or the year.</p>
+      </div>
+      <figure>
+        <img src="img/web-select.webp" alt="Two photos selected, with a bar at the bottom to add a tag to both" loading="lazy" width="1600" height="1025">
+      </figure>
+    </div>
+
+    <div class="shot shot-row flip">
+      <figure>
+        <img src="img/web-filter.webp" alt="The gallery filtered on the tag holiday, and the slideshow playing those four photos" loading="lazy" width="1600" height="1025">
+      </figure>
+      <div class="text">
+        <h3>Choose what the frame plays</h3>
+        <p class="muted">Click a tag to play only those photos, for example the
+          holiday or only the grandchildren, or click it twice to leave them out.
+          Set how long each photo stays up and whether the order is random.</p>
+      </div>
+    </div>
+
+    <div class="shot shot-row">
+      <div class="text">
+        <h3>Settings, out of the way</h3>
+        <p class="muted">A clock on the frame, a soft blurred background behind
+          photos that don't fill the screen, the transitions between photos, and
+          updates of the frame app, all tucked away in one panel.</p>
+      </div>
+      <figure>
+        <img src="img/web-settings.webp" alt="The settings panel with display options, upload tags and tag management" loading="lazy" width="1600" height="1025">
+      </figure>
+    </div>
+
+    <div class="shot shot-row flip">
+      <figure style="display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:520px;justify-self:center">
+        <div class="phone"><img src="img/phone-top.webp" alt="The web page on a phone: upload button, slideshow and tags" loading="lazy"></div>
+        <div class="phone"><img src="img/phone-show.webp" alt="The gallery on a phone, with a photo marked as on the frame" loading="lazy"></div>
+      </figure>
+      <div class="text">
+        <h3>Just as handy on your phone</h3>
+        <p class="muted">Upload photos straight from your phone's camera roll, or
+          put one on the frame while you are on the phone together.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="frame">
+  <div class="wrap">
+    <h2>The frame looks after itself</h2>
+    <p class="intro">Once it is set up, nobody needs to touch the tablet again.</p>
+    <div class="frames">
+      <img src="img/frame-sunset.webp" alt="Frame showing a sunset" loading="lazy">
+      <img src="img/frame-sailing.webp" alt="Frame showing a portrait photo of a sailing boat, with a blurred background" loading="lazy">
+      <img src="img/frame-garden.webp" alt="Frame showing a garden" loading="lazy">
+    </div>
+    <div class="feature-grid">
+      <div><h3>Starts on its own</h3>
+        <p>MemoryLink becomes the tablet's home screen, so after a power cut it
+          comes straight back to the photos.</p></div>
+      <div><h3>Copes with a bad connection</h3>
+        <p>Photos are stored on the tablet after the first time. If the connection
+          drops, the frame keeps the current photo up and picks up again by itself
+          when the connection is back.</p></div>
+      <div><h3>Portrait photos look good too</h3>
+        <p>A photo that doesn't fill the screen gets a soft, blurred copy of itself
+          behind it instead of black bars.</p></div>
+      <div><h3>Updates from a distance</h3>
+        <p>A new version of the app can be sent to the frame from the web page, so
+          you never need to visit just to update it.</p></div>
+      <div><h3>Gentle transitions and a clock</h3>
+        <p>Dissolves, slides and zooms between photos, and an optional clock and
+          date in the bottom corner.</p></div>
+      <div><h3>Any old tablet will do</h3>
+        <p>It runs on Android 7.0 and newer, so that tablet in a drawer can get a
+          second life.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="setup" class="alt">
+  <div class="wrap">
+    <h2>Setting it up</h2>
+    <p class="intro">You need a computer that is always on (a small Linux server or a
+      Raspberry Pi is plenty) and an Android tablet. Setting up takes a bit of
+      technical know-how, but only once, and only for you.</p>
+    <div class="setup">
+      <div class="card">
+        <div class="step-n">STEP 1</div>
+        <h3>Run the server</h3>
+        <p>Install <a href="https://github.com/rsnel/memorylink-server">memorylink-server</a>
+          following its <a href="https://github.com/rsnel/memorylink-server/blob/main/deploy/README.md">deployment guide</a>.
+          It is a small Python program; the guide also shows how to put it behind HTTPS
+          with a password.</p>
+      </div>
+      <div class="card">
+        <div class="step-n">STEP 2</div>
+        <h3>Install the app</h3>
+        <p>Build <a href="https://github.com/rsnel/memorylink-app">memorylink-app</a>
+          yourself, or download the APK from the latest
+          <a href="https://github.com/rsnel/memorylink-app/actions">GitHub Actions build</a>,
+          and install it on the tablet.</p>
+      </div>
+      <div class="card">
+        <div class="step-n">STEP 3</div>
+        <h3>Connect the frame</h3>
+        <p>Open the app, type in the address of your server and choose
+          <b>Set as Home app</b>. From then on the tablet starts straight into the photos.</p>
+      </div>
+      <div class="card">
+        <div class="step-n">STEP 4</div>
+        <h3>Fill it with photos</h3>
+        <p>Open the web page of your server, upload photos and start the slideshow.
+          Share the address and password with family so they can add photos too.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <h2>Free and open source</h2>
+    <p class="intro" style="margin:0 auto">MemoryLink is free software under the GNU GPL v3.
+      Have a look at the code, make changes, or build a frame for someone you love.</p>
+    <div class="actions">
+      <a class="btn" href="https://github.com/rsnel/memorylink-app">The frame app on GitHub</a>
+      <a class="btn ghost" href="https://github.com/rsnel/memorylink-server">The server on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>MemoryLink · by Rik Snel · GNU GPL v3</span>
+    <span>The photos on this page are demo images, and the frame pictures are illustrations.</span>
+  </div>
+</footer>
+
+</body>
+</html>
