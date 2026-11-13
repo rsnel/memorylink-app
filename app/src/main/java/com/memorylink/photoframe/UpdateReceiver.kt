@@ -18,7 +18,8 @@ class UpdateReceiver : BroadcastReceiver() {
                     val url = prefs.getString(FramePrefs.SERVER_URL, null)
                     if (!url.isNullOrBlank()) {
                         try {
-                            FrameClient(url).reportUpdateResult(updateId, "installed", null)
+                            FrameClient(url, FramePrefs.ensureFrameId(prefs))
+                                .reportUpdateResult(updateId, "installed", null)
                         } catch (e: Exception) {
                             // Best effort; the website will keep the last state.
                         }

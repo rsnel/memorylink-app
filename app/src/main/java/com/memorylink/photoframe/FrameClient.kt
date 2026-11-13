@@ -85,7 +85,7 @@ data class FrameState(
 }
 
 /** Minimal HTTP client for the MemoryLink server. No external dependencies. */
-class FrameClient(baseUrl: String) {
+class FrameClient(baseUrl: String, private val frameId: String) {
 
     // Credentials may be embedded in the configured URL; strip them from the
     // request URL and send them as a normal HTTP Basic Authorization header.
@@ -111,8 +111,15 @@ class FrameClient(baseUrl: String) {
         base = clean.build().toString().trimEnd('/')
     }
 
+    /** Append the frame identity to a frame-specific API path. */
+    private fun framePath(path: String): String {
+        val sep = if (path.contains('?')) '&' else '?'
+        val id = java.net.URLEncoder.encode(frameId, "UTF-8")
+        return "$path${sep}frame_id=$id"
+    }
+
     fun fetchState(): FrameState {
-        val conn = open("/api/frame/current")
+        val conn = open(framePath("/api/frame/current"))
         return try {
             check(conn)
             val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
@@ -152,7 +159,7 @@ class FrameClient(baseUrl: String) {
 
     /** Best-effort notification of the image the frame is actually showing. */
     fun reportShown(imageId: Long) {
-        val conn = open("/api/frame/shown")
+        val conn = open(framePath("/api/frame/shown"))
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
@@ -171,7 +178,7 @@ class FrameClient(baseUrl: String) {
     fun reportHeartbeat(versionCode: Long, versionName: String) {
         val encodedName = java.net.URLEncoder.encode(versionName, "UTF-8")
         val conn = open(
-            "/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName"
+            framePath("/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName")
         )
         try {
             conn.requestMethod = "POST"
@@ -187,7 +194,7 @@ class FrameClient(baseUrl: String) {
 
     /** Current update metadata, or null when nothing is queued. */
     fun fetchUpdate(): UpdateRef? {
-        val conn = open("/api/update")
+        val conn = open(framePath("/api/update"))
         return try {
             check(conn)
             val body = conn.inputStream.readBytes().toString(Charsets.UTF_8)
@@ -204,7 +211,7 @@ class FrameClient(baseUrl: String) {
             .put("update_id", updateId)
             .put("status", status)
         if (!message.isNullOrBlank()) payload.put("message", message.take(500))
-        val conn = open("/api/frame/update-result")
+        val conn = open(framePath("/api/frame/update-result"))
         try {
             conn.connectTimeout = 4000
             conn.readTimeout = 8000
@@ -233,10 +240,12 @@ class FrameClient(baseUrl: String) {
         timeoutSeconds: Int,
     ): FrameState? {
         val conn = open(
-            "/api/frame/wait?version=$version&update_id=$updateId" +
-                "&update_status=$updateStatus&show_clock=$showClock" +
-                "&blur_background=$blurBackground&restart_id=$restartId" +
-                "&timeout=$timeoutSeconds"
+            framePath(
+                "/api/frame/wait?version=$version&update_id=$updateId" +
+                    "&update_status=$updateStatus&show_clock=$showClock" +
+                    "&blur_background=$blurBackground&restart_id=$restartId" +
+                    "&timeout=$timeoutSeconds"
+            )
         )
         conn.readTimeout = (timeoutSeconds + 10) * 1000
         return try {

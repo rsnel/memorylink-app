@@ -141,6 +141,9 @@ class MainActivity : Activity() {
 
     private val prefs by lazy { getSharedPreferences(FramePrefs.NAME, MODE_PRIVATE) }
 
+    /** Stable identity of this installation; generated once and kept over updates. */
+    private val frameId: String by lazy { FramePrefs.ensureFrameId(prefs) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -162,7 +165,7 @@ class MainActivity : Activity() {
         clockDate = findViewById(R.id.clockDate)
         pidView.text = "PID: ${Process.myPid()}"
         loadAppVersion()
-        versionView.text = appVersionLabel()
+        versionView.text = appVersionLabel() + "\nFrame ID: " + frameId
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         ownerView.text = if (dpm.isDeviceOwnerApp(packageName)) {
             "Device owner: yes — silent updates"
@@ -605,7 +608,7 @@ class MainActivity : Activity() {
         updateBackdropVisibility()
         hideSystemBars(true)
         currentUrl = null
-        client = FrameClient(url)
+        client = FrameClient(url, frameId)
         stopFrame()
         running = true
         frameThread = Thread({ frameLoop() }, "frame-loop").also { it.start() }
