@@ -8,6 +8,10 @@ has the frame doesn't need to do anything: it starts by itself and shows photos.
 **Website:** https://rsnel.github.io/memorylink-app/
 
 - Requires Android 7.0 or newer.
+- Swipe left/right on the frame for the next/previous photo, pinch for a
+  2×2 to 8×8 overview, tap a photo to open it. This also works without a
+  server: the frame keeps a copy of every photo. The slideshow returns after
+  3 minutes without a touch, counted only while the server is reachable.
 - Debug builds are available as artifacts of the
   [GitHub Actions runs](https://github.com/rsnel/memorylink-app/actions).
 - On first start, enter the HTTPS address of your server and choose

@@ -129,6 +129,27 @@
     .story { grid-template-columns: 1fr; }
   }
 
+  /* take it along */
+  .away { display: grid; grid-template-columns: 1.15fr 1fr; gap: 56px; align-items: center; }
+  .away figure { margin: 0; }
+  .away figure img { border-radius: 18px; box-shadow: 0 30px 60px -30px rgba(80,40,10,.55); }
+  .gestures { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 14px; }
+  .gestures li { display: grid; grid-template-columns: 52px 1fr; gap: 14px; align-items: start; }
+  .gestures .g {
+    width: 52px; height: 52px; border-radius: 14px;
+    background: var(--accent-soft); color: var(--accent);
+    display: grid; place-items: center;
+    font: 700 22px/1 system-ui, sans-serif;
+  }
+  .gestures b { font-family: system-ui, sans-serif; }
+  .gestures p { margin: 2px 0 0; color: var(--soft); font-size: 17px; }
+  .note {
+    margin-top: 24px; padding: 14px 18px;
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    font-size: 16px; color: var(--soft);
+  }
+  @media (max-width: 900px) { .away { grid-template-columns: 1fr; } }
+
   /* how it works */
   .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 14px; align-items: stretch; margin-top: 8px; }
   .flow .node { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; text-align: center; }
@@ -193,6 +214,7 @@
     <a class="brand" href="#top"><img src="favicon.png" alt="">MemoryLink</a>
     <a href="#why">Why</a>
     <a href="#phone">On the phone</a>
+    <a href="#away">Take it along</a>
     <a href="#how">How it works</a>
     <a href="#webapp">Web app</a>
     <a href="#setup">Set up</a>
@@ -290,15 +312,47 @@
   </div>
 </section>
 
-<section id="how" class="alt">
+<section id="away" class="alt">
+  <div class="wrap away">
+    <figure>
+      <img src="img/frame-grid.webp" alt="The photo frame showing an overview of eight photos, one of them marked" loading="lazy" width="813" height="552">
+    </figure>
+    <div>
+      <div class="eyebrow">Take it along</div>
+      <h2>Bring the frame to a friend and show your photos</h2>
+      <p>
+        The frame isn't stuck on the dresser. Take it to a friend's house or a family
+        party and go through the photos together, with no phone or laptop needed.
+        It works without internet too, because the frame keeps a copy of every
+        photo on the tablet.
+      </p>
+      <ul class="gestures">
+        <li><span class="g">⇆</span><div><b>Swipe left or right</b>
+          <p>Next or previous photo: first the ones the slideshow is showing, then all
+            the other photos in the usual order.</p></div></li>
+        <li><span class="g">⤡</span><div><b>Pinch</b>
+          <p>See many photos at once, from 2×2 up to 8×8. Pinch further for more,
+            the other way for fewer.</p></div></li>
+        <li><span class="g">☝︎</span><div><b>Tap a photo</b>
+          <p>Shows it full size. Press back, or pinch again, to return to the overview.</p></div></li>
+      </ul>
+      <p class="note">
+        Back home, the frame returns to its slideshow by itself after three minutes
+        without a touch. Away from home it waits until you are done.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="how">
   <div class="wrap">
     <h2>How it works</h2>
     <p class="intro">
       MemoryLink has two parts: a small server with a web page where you manage the
       photos, and an app that turns an Android tablet into the frame. The frame
       keeps a connection open to the server, so it hears about every change
-      straight away. Photos are stored on the tablet after the first time, so they
-      appear without waiting.
+      straight away. It also keeps a copy of every photo on the tablet, so photos
+      appear without waiting and can be shown without internet.
     </p>
     <div class="flow">
       <div class="node"><div class="icon">💻📱</div><h3>You</h3>
@@ -389,9 +443,9 @@
         <p>MemoryLink becomes the tablet's home screen, so after a power cut it
           comes straight back to the photos.</p></div>
       <div><h3>Copes with a bad connection</h3>
-        <p>Photos are stored on the tablet after the first time. If the connection
-          drops, the frame keeps the current photo up and picks up again by itself
-          when the connection is back.</p></div>
+        <p>Every photo is also stored on the tablet. If the connection drops, the
+          frame keeps the current photo up, you can still swipe through all photos,
+          and it picks up again by itself when the connection is back.</p></div>
       <div><h3>Portrait photos look good too</h3>
         <p>A photo that doesn't fill the screen gets a soft, blurred copy of itself
           behind it instead of black bars.</p></div>
