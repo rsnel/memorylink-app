@@ -94,6 +94,23 @@
         android:src="@drawable/ic_browse_back"
         android:visibility="gone" />
 
+    <!-- While browsing: back to the slideshow (or the chosen photo). -->
+    <TextView
+        android:id="@+id/browseResume"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="16dp"
+        android:background="@drawable/browse_label_bg"
+        android:paddingStart="22dp"
+        android:paddingEnd="22dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:text="@string/browse_resume"
+        android:textColor="#ffffff"
+        android:textSize="20sp"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/clockView"
         android:layout_width="wrap_content"

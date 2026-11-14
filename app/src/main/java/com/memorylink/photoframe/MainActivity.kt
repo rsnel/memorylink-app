@@ -92,6 +92,7 @@ class MainActivity : Activity() {
     private lateinit var browseView: BrowseView
     private lateinit var browseLabel: TextView
     private lateinit var browseBack: ImageButton
+    private lateinit var browseResume: TextView
     private lateinit var browseTagBar: HorizontalScrollView
     private lateinit var browseTagRow: LinearLayout
 
@@ -335,6 +336,10 @@ class MainActivity : Activity() {
             touchBrowse()
             openGrid()
         }
+        browseResume = findViewById(R.id.browseResume)
+        // Leave browsing at once: back to the slideshow, or to the photo
+        // chosen with "Show on frame".
+        browseResume.setOnClickListener { endBrowse() }
         browseView.listener = browseListener
         browseView.thumbs = BrowseView.ThumbSource { ref, width, height -> thumbFor(ref, width, height) }
         pidView.text = "PID: ${Process.myPid()}"
@@ -1222,7 +1227,9 @@ class MainActivity : Activity() {
             val offlineFor = SystemClock.elapsedRealtime() - offlineSince
             if (currentUrl != null && offlineFor > OFFLINE_NOTICE_MS) clearStatus() else setStatus(message)
             val untilNext = nextSlideAt - SystemClock.elapsedRealtime()
-            val pause = if (untilNext > 0L) minOf(retryMs, maxOf(250L, untilNext)) else retryMs
+            var pause = if (untilNext > 0L) minOf(retryMs, maxOf(250L, untilNext)) else retryMs
+            // While browsing, check often so Resume takes effect at once.
+            if (browsing) pause = minOf(pause, BROWSE_POLL_SECONDS * 1000L)
             return sleepInterruptible(pause)
         }
 
@@ -1882,6 +1889,7 @@ class MainActivity : Activity() {
             openedFromGrid = false
             browsing = true
             statusView.visibility = View.GONE
+            browseResume.visibility = View.VISIBLE
             browseHandler.removeCallbacks(browseTimeoutCheck)
             browseHandler.postDelayed(browseTimeoutCheck, BROWSE_CHECK_MS)
         }
@@ -1918,6 +1926,7 @@ class MainActivity : Activity() {
         browseLabel.visibility = View.GONE
         browseTag = null
         updateBackButton()
+        browseResume.visibility = View.GONE
         if (wasBrowsing) resumeSlideshow = true
     }
 
@@ -2458,7 +2467,7 @@ class MainActivity : Activity() {
         /** Browsing ends after this long without a touch, while the server is reachable. */
         private const val BROWSE_TIMEOUT_MS = 3 * 60_000L
         private const val BROWSE_CHECK_MS = 5_000L
-        private const val BROWSE_POLL_SECONDS = 5
+        private const val BROWSE_POLL_SECONDS = 1
         private const val BROWSE_TRANSITION_MS = 350L
         private const val BROWSE_LABEL_MS = 2_000L
         private const val CONTACT_FRESH_MS = 30_000L
