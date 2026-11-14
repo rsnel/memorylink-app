@@ -60,6 +60,13 @@ class BrowseView @JvmOverloads constructor(
 
     var gridVisible = false
         private set
+
+    /** Space kept free above the first row (for the tag chips). */
+    var topInset = 0f
+        set(value) {
+            field = value
+            if (gridVisible) scrollTo(scrollPos)
+        }
     var columns = 2
         private set
 
@@ -199,7 +206,7 @@ class BrowseView @JvmOverloads constructor(
         scrollPos = 0f
         if (selected >= 0) {
             val row = selected / columns
-            scrollTo(rowTop(row) - (height - cellHeight()) / 2f)
+            scrollTo(rowTop(row) - (height + topInset - cellHeight()) / 2f)
         }
         invalidate()
     }
@@ -218,7 +225,7 @@ class BrowseView @JvmOverloads constructor(
     private fun cellHeight(): Float =
         if (width > 0) cellWidth() * height / width else 0f
 
-    private fun rowTop(row: Int): Float = gap + row * (cellHeight() + gap)
+    private fun rowTop(row: Int): Float = gap + topInset + row * (cellHeight() + gap)
 
     private fun maxScroll(): Float {
         val rows = (items.size + columns - 1) / columns
@@ -242,7 +249,7 @@ class BrowseView @JvmOverloads constructor(
         val pitchY = cellHeight() + gap
         if (pitchX <= 0f || pitchY <= 0f) return -1
         val col = floor((x - gap) / pitchX).toInt()
-        val row = floor((y + scrollPos - gap) / pitchY).toInt()
+        val row = floor((y + scrollPos - gap - topInset) / pitchY).toInt()
         if (col !in 0 until columns || row < 0) return -1
         val index = row * columns + col
         if (index >= items.size) return -1
@@ -257,7 +264,7 @@ class BrowseView @JvmOverloads constructor(
         val pitchY = cellHeight() + gap
         if (pitchX <= 0f || pitchY <= 0f) return -1
         val col = floor((x - gap / 2) / pitchX).toInt().coerceIn(0, columns - 1)
-        val row = floor((y + scrollPos - gap / 2) / pitchY).toInt().coerceAtLeast(0)
+        val row = floor((y + scrollPos - gap / 2 - topInset) / pitchY).toInt().coerceAtLeast(0)
         return min(row * columns + col, items.size - 1)
     }
 
@@ -299,7 +306,7 @@ class BrowseView @JvmOverloads constructor(
         val h = cellHeight()
         if (w <= 0f || h <= 0f) return
         val pitchY = h + gap
-        val firstRow = max(0, floor((scrollPos - gap) / pitchY).toInt())
+        val firstRow = max(0, floor((scrollPos - gap - topInset) / pitchY).toInt())
         val lastRow = ceil((scrollPos + height) / pitchY).toInt()
         val source = thumbs
         for (row in firstRow..lastRow) {

@@ -17,12 +17,16 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.animation.ValueAnimator
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.drawable.GradientDrawable
 import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -43,7 +47,10 @@ import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.HorizontalScrollView
+import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.math.ceil
 import java.io.File
@@ -82,10 +89,25 @@ class MainActivity : Activity() {
     private lateinit var clockDate: TextView
     private lateinit var browseView: BrowseView
     private lateinit var browseLabel: TextView
+    private lateinit var browseBack: ImageButton
+    private lateinit var browseTagBar: HorizontalScrollView
+    private lateinit var browseTagRow: LinearLayout
 
     private var clockEnabled = false
     @Volatile
     private var blurEnabled = false
+
+    /** fill, fit, blur or pan (see DISPLAY_MODES). UI thread. */
+    private var displayMode = "fit"
+    private var panAnimator: ValueAnimator? = null
+
+    /** One pan across the photo takes this long (the slideshow interval). */
+    @Volatile
+    private var panSeconds = 30
+
+    /** The splash artwork in use; chosen from how the tablet is held. */
+    private var splashLandscape = false
+    private var splashShownAt = 0L
     private var backdropBitmap: Bitmap? = null
     private var appVersionCode = 0L
     private var appVersionName = "?"
@@ -185,7 +207,9 @@ class MainActivity : Activity() {
     private var knownLibrary: List<ImageRef> = emptyList()
 
     // UI thread only.
+    private var browseAll: List<ImageRef> = emptyList()
     private var browseItems: List<ImageRef> = emptyList()
+    private var browseTag: String? = null
     private var browseIndex = -1
     private var openedFromGrid = false
     private var gridColumns = BrowseView.MIN_COLUMNS
@@ -240,6 +264,13 @@ class MainActivity : Activity() {
         clockDate = findViewById(R.id.clockDate)
         browseView = findViewById(R.id.browseView)
         browseLabel = findViewById(R.id.browseLabel)
+        browseBack = findViewById(R.id.browseBack)
+        browseTagBar = findViewById(R.id.browseTagBar)
+        browseTagRow = findViewById(R.id.browseTagRow)
+        browseBack.setOnClickListener {
+            touchBrowse()
+            openGrid()
+        }
         browseView.listener = browseListener
         browseView.thumbs = BrowseView.ThumbSource { ref, width, height -> thumbFor(ref, width, height) }
         pidView.text = "PID: ${Process.myPid()}"
@@ -254,17 +285,13 @@ class MainActivity : Activity() {
         updateClockText()
         clockHandler.post(clockTicker)
 
-        // Show the splash briefly, then fade it away over whatever is behind it.
-        splashView.postDelayed({
-            splashView.animate()
-                .alpha(0f)
-                .setDuration(450)
-                .withEndAction {
-                    splashView.visibility = View.GONE
-                    // Release the full-screen splash bitmap after the fade.
-                    splashView.setImageDrawable(null)
-                }
-        }, 3200L)
+        // Show the artwork that matches how the tablet is held right now. The
+        // app never asks for an orientation, so the splash doesn't rotate the
+        // screen. Show it briefly, then fade it away over whatever is behind it.
+        splashLandscape = isLandscapeNow()
+        splashView.setImageResource(splashResource())
+        splashShownAt = SystemClock.elapsedRealtime()
+        splashView.postDelayed({ hideSplashWhenReady() }, SPLASH_MIN_MS)
 
         personalizeSplash()
 
@@ -321,15 +348,58 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun isLandscapeNow(): Boolean {
+        val metrics = resources.displayMetrics
+        return metrics.widthPixels > metrics.heightPixels
+    }
+
+    private fun splashResource(): Int =
+        if (splashLandscape) R.drawable.splash_landscape else R.drawable.splash_portrait
+
+    /**
+     * Fade the splash out. While the tablet is still looking for a network,
+     * keep it up to SPLASH_WIFI_EXTRA_MS longer.
+     */
+    private fun hideSplashWhenReady() {
+        if (splashView.visibility != View.VISIBLE) return
+        val waited = SystemClock.elapsedRealtime() - splashShownAt
+        if (!networkAvailable() && waited < SPLASH_MIN_MS + SPLASH_WIFI_EXTRA_MS) {
+            splashView.postDelayed({ hideSplashWhenReady() }, 500L)
+            return
+        }
+        splashView.animate()
+            .alpha(0f)
+            .setDuration(450)
+            .withEndAction {
+                splashView.visibility = View.GONE
+                // Release the full-screen splash bitmap after the fade.
+                splashView.setImageDrawable(null)
+            }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Turned while the splash is up: switch to the matching artwork.
+        val landscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        if (splashView.visibility == View.VISIBLE && landscape != splashLandscape) {
+            splashLandscape = landscape
+            splashView.setImageResource(splashResource())
+            personalizeSplash()
+        }
+        // The pan depends on the screen's shape.
+        frameView.post { refreshPan() }
+    }
+
     private fun personalizeSplash() {
         val url = prefs.getString(FramePrefs.LAST_SHOWN_URL, null) ?: return
         val file = imageFile(url)
         if (!file.isFile) return
+        val landscape = splashLandscape
         Thread {
-            val composed = composeSplash(file)
+            val composed = composeSplash(file, landscape)
             if (composed != null) {
                 runOnUiThread {
-                    if (splashView.visibility == View.VISIBLE) {
+                    if (splashView.visibility == View.VISIBLE && landscape == splashLandscape) {
                         splashView.setImageBitmap(composed)
                     } else {
                         composed.recycle()
@@ -342,26 +412,26 @@ class MainActivity : Activity() {
     /**
      * The last photo, drawn into the picture frame on the splash artwork.
      *
-     * splash_overlay.png is the artwork with the frame's opening cut out, so
-     * the photo is drawn first and the overlay on top of it. The photo is laid
-     * out on a flat canvas with the opening's proportions and that canvas is
-     * warped onto the opening, so the picture is never stretched: it fills the
-     * opening when only a little has to be trimmed for that, and is otherwise
-     * shown whole on a soft blurred copy of itself.
+     * The photo is laid out on a flat canvas with the opening's proportions
+     * and that canvas is warped onto the opening (the frame stands at a slight
+     * angle), then cut to the opening with a smooth edge. The picture is never
+     * stretched: it fills the opening when only a little has to be trimmed for
+     * that, and is otherwise shown whole on a soft blurred copy of itself.
      */
-    private fun composeSplash(photoFile: File): Bitmap? {
-        val overlayOptions = BitmapFactory.Options().apply {
+    private fun composeSplash(photoFile: File, landscape: Boolean): Bitmap? {
+        val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inMutable = true
         }
-        val overlay = BitmapFactory.decodeResource(
-            resources, R.drawable.splash_overlay, overlayOptions
+        val artwork = BitmapFactory.decodeResource(
+            resources,
+            if (landscape) R.drawable.splash_landscape else R.drawable.splash_portrait,
+            options,
         ) ?: return null
-        val width = overlay.width
-        val height = overlay.height
-
-        val quad = FloatArray(8) { i ->
-            SPLASH_OPENING[i] * (if (i % 2 == 0) width else height)
-        }
+        val width = artwork.width
+        val height = artwork.height
+        val opening = if (landscape) SPLASH_OPENING_LANDSCAPE else SPLASH_OPENING_PORTRAIT
+        val quad = FloatArray(8) { i -> opening[i] * (if (i % 2 == 0) width else height) }
         fun side(a: Int, b: Int) = Math.hypot(
             (quad[2 * a] - quad[2 * b]).toDouble(),
             (quad[2 * a + 1] - quad[2 * b + 1]).toDouble(),
@@ -369,24 +439,12 @@ class MainActivity : Activity() {
         val openWidth = (side(0, 1) + side(3, 2)) / 2f
         val openHeight = (side(0, 3) + side(1, 2)) / 2f
 
-        // Let the picture run a few pixels under the mat, so the anti-aliased
-        // edge of the opening never shows a gap.
-        val cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4f
-        val cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4f
-        for (i in quad.indices step 2) {
-            val dx = quad[i] - cx
-            val dy = quad[i + 1] - cy
-            val len = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
-            quad[i] += dx / len * SPLASH_BLEED_PX
-            quad[i + 1] += dy / len * SPLASH_BLEED_PX
-        }
-
         // Flat canvas with the opening's proportions, oversampled a little so
         // the warp stays sharp.
         val canvasW = Math.round(openWidth * SPLASH_OVERSAMPLE)
         val canvasH = Math.round(openHeight * SPLASH_OVERSAMPLE)
         val photo = decodeSampled(photoFile, canvasW, canvasH) ?: run {
-            overlay.recycle()
+            artwork.recycle()
             return null
         }
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -418,13 +476,28 @@ class MainActivity : Activity() {
             ),
             0, quad, 0, 4,
         )
-        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(result)
-        canvas.drawBitmap(content, warp, paint)
-        canvas.drawBitmap(overlay, 0f, 0f, null)
+        // Warp the photo onto a full-size layer, then paint that layer onto
+        // the artwork through the opening's outline (anti-aliased).
+        val layer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        Canvas(layer).drawBitmap(content, warp, paint)
         content.recycle()
-        overlay.recycle()
-        return result
+        val outline = Path().apply {
+            moveTo(quad[0], quad[1])
+            lineTo(quad[2], quad[3])
+            lineTo(quad[4], quad[5])
+            lineTo(quad[6], quad[7])
+            close()
+        }
+        val through = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            shader = android.graphics.BitmapShader(
+                layer,
+                android.graphics.Shader.TileMode.CLAMP,
+                android.graphics.Shader.TileMode.CLAMP,
+            )
+        }
+        Canvas(artwork).drawPath(outline, through)
+        layer.recycle()
+        return artwork
     }
 
     /** Matrix that centres [bitmap] in a w x h box, covering it or fitting inside. */
@@ -621,6 +694,63 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /**
+     * How photos that don't have the screen's shape are shown: zoomed in to
+     * fill (fill), whole on black (fit), whole on a blurred copy (blur), or
+     * zoomed in and slowly panned from one edge to the other (pan).
+     */
+    private fun setDisplayMode(mode: String) {
+        if (mode != displayMode) {
+            displayMode = mode
+            val type = when (mode) {
+                "fill" -> ImageView.ScaleType.CENTER_CROP
+                "pan" -> ImageView.ScaleType.MATRIX
+                else -> ImageView.ScaleType.FIT_CENTER
+            }
+            frameView.scaleType = type
+            nextFrameView.scaleType = type
+            refreshPan()
+        }
+        setBlurEnabled(mode == "blur")
+    }
+
+    /** Image matrix that covers [view] with its photo, [progress] of the way across. */
+    private fun panMatrix(view: ImageView, progress: Float): Matrix? {
+        val drawable = view.drawable ?: return null
+        val bw = drawable.intrinsicWidth.toFloat()
+        val bh = drawable.intrinsicHeight.toFloat()
+        if (bw <= 0f || bh <= 0f) return null
+        val vw = (if (view.width > 0) view.width else resources.displayMetrics.widthPixels).toFloat()
+        val vh = (if (view.height > 0) view.height else resources.displayMetrics.heightPixels).toFloat()
+        val scale = maxOf(vw / bw, vh / bh)
+        // One of these is zero: the photo overflows the screen in one direction.
+        val overflowX = vw - bw * scale
+        val overflowY = vh - bh * scale
+        return Matrix().apply {
+            setScale(scale, scale)
+            postTranslate(overflowX * progress, overflowY * progress)
+        }
+    }
+
+    /** (Re)start the slow pan of the photo on screen, in pan mode. */
+    private fun refreshPan() {
+        panAnimator?.cancel()
+        panAnimator = null
+        if (displayMode != "pan") return
+        val start = panMatrix(frameView, 0f) ?: return
+        frameView.imageMatrix = start
+        val animator = ValueAnimator.ofFloat(0f, 1f)
+        animator.duration = panSeconds.coerceAtLeast(10) * 1000L
+        animator.repeatMode = ValueAnimator.REVERSE
+        animator.repeatCount = ValueAnimator.INFINITE
+        animator.interpolator = AccelerateDecelerateInterpolator()
+        animator.addUpdateListener { a ->
+            panMatrix(frameView, a.animatedValue as Float)?.let { frameView.imageMatrix = it }
+        }
+        animator.start()
+        panAnimator = animator
+    }
+
     /** Tiny, heavily downscaled image used as a soft fill behind the photo. */
     private fun blurredBackdrop(source: Bitmap): Bitmap {
         val maxDim = 64
@@ -714,6 +844,7 @@ class MainActivity : Activity() {
         var stateUpdateStatus = ""
         var stateShowClock = false
         var stateBlur = false
+        var stateDisplayMode = "fit"
         var stateRestartId = 0L
         var lastRestartId = prefs.getLong(FramePrefs.HANDLED_RESTART, 0L)
         var pendingState: FrameState? = null
@@ -741,6 +872,8 @@ class MainActivity : Activity() {
                 stateUpdateStatus = state.update?.status ?: ""
                 stateShowClock = state.showClock
                 stateBlur = state.blurBackground
+                stateDisplayMode = state.displayMode
+                panSeconds = state.intervalSeconds
                 stateRestartId = state.restartId
                 if (state.restartId > lastRestartId) {
                     prefs.edit()
@@ -755,7 +888,7 @@ class MainActivity : Activity() {
                 }
                 runOnUiThread {
                     setClockEnabled(stateShowClock)
-                    setBlurEnabled(stateBlur)
+                    setDisplayMode(stateDisplayMode)
                 }
                 clearStatus()
                 try {
@@ -864,6 +997,7 @@ class MainActivity : Activity() {
                     stateUpdateStatus,
                     stateShowClock,
                     stateBlur,
+                    stateDisplayMode,
                     stateRestartId,
                     waitSeconds,
                 )
@@ -1301,6 +1435,7 @@ class MainActivity : Activity() {
             setBackdrop(null)
             frameView.setImageBitmap(null)
             screenUrl = null
+            refreshPan()
         }
     }
 
@@ -1324,6 +1459,7 @@ class MainActivity : Activity() {
             touchBrowse()
             closeGrid()
             openedFromGrid = true
+            updateBackButton()
             showBrowsed(index, Transition.ZOOM_OUT)
         }
 
@@ -1378,7 +1514,9 @@ class MainActivity : Activity() {
     /** Enter browsing (if not browsing yet); false when there is nothing to show. */
     private fun beginBrowse(): Boolean {
         if (!browsing) {
-            browseItems = browseSequence()
+            browseAll = browseSequence()
+            browseTag = null
+            browseItems = browseAll
             if (browseItems.isEmpty()) return false
             val url = screenUrl
             browseIndex = browseItems.indexOfFirst { it.url == url }
@@ -1419,15 +1557,19 @@ class MainActivity : Activity() {
         browseHandler.removeCallbacks(hideBrowseLabel)
         browseLabel.animate().cancel()
         browseLabel.visibility = View.GONE
+        browseTag = null
+        updateBackButton()
         if (wasBrowsing) resumeSlideshow = true
     }
 
     private fun openGrid() {
         openedFromGrid = false
         thumbFailed.clear() // retry photos that may have arrived since
+        showTagBar(true)
         browseView.showGrid(browseItems, browseIndex, gridColumns)
         browseHandler.removeCallbacks(hideBrowseLabel)
         browseLabel.visibility = View.GONE
+        updateBackButton()
         applyClockVisibility()
     }
 
@@ -1436,7 +1578,61 @@ class MainActivity : Activity() {
             gridColumns = browseView.columns
             browseView.hideGrid()
         }
+        showTagBar(false)
+        updateBackButton()
         applyClockVisibility()
+    }
+
+    /** The arrow back to the overview, on a photo that was opened from it. */
+    private fun updateBackButton() {
+        val show = browsing && openedFromGrid && !browseView.gridVisible
+        browseBack.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun dp(value: Int): Int = Math.round(value * resources.displayMetrics.density)
+
+    /** Tag chips above the grid; choosing one narrows the photos to that tag. */
+    private fun showTagBar(visible: Boolean) {
+        val tags = browseAll.flatMap { it.tags }.distinct().sorted()
+        val show = visible && tags.isNotEmpty()
+        browseTagBar.visibility = if (show) View.VISIBLE else View.GONE
+        browseView.topInset = if (show) dp(TAG_BAR_DP).toFloat() else 0f
+        browseTagRow.removeAllViews()
+        if (!show) return
+        browseTagRow.addView(tagChip(getString(R.string.browse_all_tags, browseAll.size), browseTag == null) {
+            selectBrowseTag(null)
+        })
+        for (tag in tags) {
+            val count = browseAll.count { tag in it.tags }
+            browseTagRow.addView(tagChip("$tag ($count)", tag == browseTag) { selectBrowseTag(tag) })
+        }
+    }
+
+    private fun tagChip(text: String, selected: Boolean, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 18f
+            setTextColor(if (selected) Color.BLACK else Color.WHITE)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                setColor(if (selected) Color.WHITE else 0x40ffffff)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = dp(8) }
+            setOnClickListener { onClick() }
+        }
+
+    private fun selectBrowseTag(tag: String?) {
+        touchBrowse()
+        val current = browseItems.getOrNull(browseIndex)?.url ?: screenUrl
+        browseTag = tag
+        browseItems = if (tag == null) browseAll else browseAll.filter { tag in it.tags }
+        browseIndex = browseItems.indexOfFirst { it.url == current }
+        showTagBar(true)
+        browseView.showGrid(browseItems, browseIndex, browseView.columns)
     }
 
     /** Show browseItems[index] with the given transition. */
@@ -1541,6 +1737,7 @@ class MainActivity : Activity() {
                 if (screenUrl == null && frameView.visibility == View.VISIBLE) {
                     screenUrl = url
                     frameView.setImageBitmap(bmp)
+                    refreshPan()
                 }
             }
         }.start()
@@ -1555,7 +1752,11 @@ class MainActivity : Activity() {
 
     private fun refsToJson(refs: List<ImageRef>): JSONArray {
         val array = JSONArray()
-        for (ref in refs) array.put(JSONObject().put("id", ref.id).put("url", ref.url))
+        for (ref in refs) {
+            array.put(
+                JSONObject().put("id", ref.id).put("url", ref.url).put("tags", JSONArray(ref.tags))
+            )
+        }
         return array
     }
 
@@ -1666,6 +1867,7 @@ class MainActivity : Activity() {
         nextFrameView.setBackgroundColor(if (blurEnabled) Color.TRANSPARENT else Color.BLACK)
         if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
         nextFrameView.setImageBitmap(bmp)
+        if (displayMode == "pan") panMatrix(nextFrameView, 0f)?.let { nextFrameView.imageMatrix = it }
         nextFrameView.visibility = View.VISIBLE
 
         val kinds = transitionKinds()
@@ -1719,6 +1921,7 @@ class MainActivity : Activity() {
     private fun finishTransition(bmp: Bitmap) {
         frameView.setImageBitmap(bmp)
         resetNextFrame()
+        refreshPan()
     }
 
     private fun resetNextFrame() {
@@ -1773,6 +1976,7 @@ class MainActivity : Activity() {
         super.onDestroy()
         clockHandler.removeCallbacks(clockTicker)
         browseHandler.removeCallbacksAndMessages(null)
+        panAnimator?.cancel()
         stopFrame()
         browseExecutor.shutdownNow()
         thumbExecutor.shutdownNow()
@@ -1799,17 +2003,33 @@ class MainActivity : Activity() {
 
     companion object {
         /**
-         * Corners of the picture opening in splash_overlay.png (top-left,
-         * top-right, bottom-right, bottom-left), as x,y fractions of the
-         * artwork's size. Change these together with the artwork.
+         * Corners of the picture opening in splash_landscape.jpg and
+         * splash_portrait.jpg (top-left, top-right, bottom-right, bottom-left),
+         * as x,y fractions of the artwork's size. Change these together with
+         * the artwork.
          */
-        private val SPLASH_OPENING = floatArrayOf(
-            0.210975f, 0.573404f,
-            0.756449f, 0.570685f,
-            0.796272f, 0.772290f,
-            0.243240f, 0.786483f,
+        private val SPLASH_OPENING_LANDSCAPE = floatArrayOf(
+            0.410920f, 0.566489f,
+            0.595905f, 0.561170f,
+            0.609914f, 0.757979f,
+            0.421695f, 0.771277f,
         )
-        private const val SPLASH_BLEED_PX = 3f
+        private val SPLASH_OPENING_PORTRAIT = floatArrayOf(
+            0.311170f, 0.492098f,
+            0.722074f, 0.491379f,
+            0.740691f, 0.775144f,
+            0.319149f, 0.777299f,
+        )
+
+        /** The splash stays at least this long ... */
+        private const val SPLASH_MIN_MS = 3_200L
+
+        /** ... and up to this much longer while the tablet looks for a network. */
+        private const val SPLASH_WIFI_EXTRA_MS = 7_000L
+
+        /** Height of the tag chips above the photo grid. */
+        private const val TAG_BAR_DP = 64
+
         private const val SPLASH_OVERSAMPLE = 1.5f
 
         /** Crop the photo to fill the opening only if at least this much of it stays visible. */

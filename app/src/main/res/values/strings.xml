@@ -10,4 +10,6 @@
     <string name="set_launcher">Set as launcher</string>
     <string name="resume_frame">Resume frame</string>
     <string name="frame_image_desc">Frame image</string>
+    <string name="browse_back">Back to the overview</string>
+    <string name="browse_all_tags">All (%1$d)</string>
 </resources>

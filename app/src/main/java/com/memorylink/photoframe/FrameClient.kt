@@ -9,9 +9,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** A single image reference the server hands to the frame. */
-data class ImageRef(val id: Long, val url: String) {
+data class ImageRef(val id: Long, val url: String, val tags: List<String> = emptyList()) {
     companion object {
-        fun fromJson(o: JSONObject) = ImageRef(o.optLong("id"), o.getString("url"))
+        fun fromJson(o: JSONObject): ImageRef {
+            val arr = o.optJSONArray("tags")
+            val tags = if (arr == null) emptyList() else (0 until arr.length()).map { arr.getString(it) }
+            return ImageRef(o.optLong("id"), o.getString("url"), tags)
+        }
     }
 }
 
@@ -41,6 +45,9 @@ data class UpdateRef(
 /** A nearby Bluetooth device reported to the server. */
 data class BluetoothSeen(val address: String, val name: String?, val rssi: Int)
 
+/** How photos that don't have the screen's shape are shown. */
+val DISPLAY_MODES = listOf("fill", "fit", "blur", "pan")
+
 /** Parsed response of GET /api/frame/current. */
 data class FrameState(
     val mode: String,
@@ -49,6 +56,8 @@ data class FrameState(
     val random: Boolean,
     val showClock: Boolean,
     val blurBackground: Boolean,
+    /** fill, fit, blur or pan; see DisplayMode. */
+    val displayMode: String,
     val restartId: Long,
     val transitions: List<String>,
     val single: ImageRef?,
@@ -80,6 +89,10 @@ data class FrameState(
                 random = o.optBoolean("random", false),
                 showClock = o.optBoolean("show_clock", false),
                 blurBackground = o.optBoolean("blur_background", false),
+                displayMode = o.optString("display_mode", "").let { mode ->
+                    if (mode in DISPLAY_MODES) mode
+                    else if (o.optBoolean("blur_background", false)) "blur" else "fit"
+                },
                 restartId = o.optLong("restart_id", 0),
                 transitions = transitions,
                 single = single,
@@ -243,6 +256,7 @@ class FrameClient(baseUrl: String, private val frameId: String) {
         updateStatus: String,
         showClock: Boolean,
         blurBackground: Boolean,
+        displayMode: String,
         restartId: Long,
         timeoutSeconds: Int,
     ): FrameState? {
@@ -250,7 +264,8 @@ class FrameClient(baseUrl: String, private val frameId: String) {
             framePath(
                 "/api/frame/wait?version=$version&update_id=$updateId" +
                     "&update_status=$updateStatus&show_clock=$showClock" +
-                    "&blur_background=$blurBackground&restart_id=$restartId" +
+                    "&blur_background=$blurBackground&display_mode=$displayMode" +
+                    "&restart_id=$restartId" +
                     "&timeout=$timeoutSeconds"
             )
         )

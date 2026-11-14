@@ -60,6 +60,40 @@
         android:visibility="gone"
         android:importantForAccessibility="no" />
 
+    <!-- Tag chips above the photo grid. -->
+    <HorizontalScrollView
+        android:id="@+id/browseTagBar"
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:layout_gravity="top"
+        android:background="#e6101114"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/browseTagRow"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
+    </HorizontalScrollView>
+
+    <!-- Back to the photo grid, on a photo opened from it. -->
+    <ImageButton
+        android:id="@+id/browseBack"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="top|start"
+        android:layout_margin="16dp"
+        android:background="@drawable/browse_label_bg"
+        android:contentDescription="@string/browse_back"
+        android:padding="16dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_browse_back"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/clockView"
         android:layout_width="wrap_content"
@@ -237,7 +271,6 @@
         android:layout_height="match_parent"
         android:background="@color/ic_launcher_background"
         android:scaleType="centerCrop"
-        android:src="@drawable/splash"
         android:contentDescription="@string/app_name"
         android:importantForAccessibility="no" />
 
