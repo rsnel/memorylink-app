@@ -274,4 +274,15 @@
         android:contentDescription="@string/app_name"
         android:importantForAccessibility="no" />
 
+    <!-- Black cover while the frame sleeps; a touch wakes it. -->
+    <View
+        android:id="@+id/sleepView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
 </FrameLayout>

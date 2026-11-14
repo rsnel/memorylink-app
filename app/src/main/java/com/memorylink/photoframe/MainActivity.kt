@@ -35,6 +35,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.PowerManager
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
@@ -112,6 +113,33 @@ class MainActivity : Activity() {
 
     @Volatile
     private var screenHeight = 0
+
+    // ---- Sleeping ------------------------------------------------------------
+    // The frame sleeps on a nightly schedule (in its own local time) and on
+    // Sleep/Wake commands from the web page; a touch wakes it. Whichever of
+    // these happened last decides, except that a scheduled switch overrides
+    // anything from before it.
+
+    @Volatile
+    private var sleeping = false
+
+    /** True when the screen was really switched off (device owner only). */
+    private var sleepingReal = false
+    private var sleepStartedAt = 0L
+    private var sleepAtMin = -1
+    private var wakeAtMin = -1
+    private var sleepCmd: String? = null
+    private var sleepCmdId = 0L
+    private var sleepCmdAt = 0L
+    private var touchWakeAt = 0L
+    private lateinit var sleepView: View
+    private val sleepHandler = Handler(Looper.getMainLooper())
+    private val sleepTicker = object : Runnable {
+        override fun run() {
+            evaluateSleep()
+            sleepHandler.postDelayed(this, SLEEP_CHECK_MS)
+        }
+    }
 
     /** auto, portrait or landscape (from the server). UI thread. */
     private var orientationLock = "auto"
@@ -278,6 +306,14 @@ class MainActivity : Activity() {
         browseBack = findViewById(R.id.browseBack)
         browseTagBar = findViewById(R.id.browseTagBar)
         browseTagRow = findViewById(R.id.browseTagRow)
+        sleepView = findViewById(R.id.sleepView)
+        sleepView.setOnClickListener {
+            // A touch wakes the frame until the next scheduled sleep.
+            touchWakeAt = System.currentTimeMillis()
+            evaluateSleep()
+        }
+        loadSleepSettings()
+        sleepHandler.postDelayed(sleepTicker, SLEEP_CHECK_MS)
         browseBack.setOnClickListener {
             touchBrowse()
             openGrid()
@@ -417,13 +453,178 @@ class MainActivity : Activity() {
                 val h = screenHeight
                 Thread {
                     try {
-                        c.reportHeartbeat(appVersionCode, appVersionName, w, h)
+                        c.reportHeartbeat(appVersionCode, appVersionName, w, h, sleeping)
                     } catch (e: Exception) {
                         // The next poll reports it anyway.
                     }
                 }.start()
             }
         }
+    }
+
+    private fun parseMinutes(value: String?): Int {
+        val parts = value?.split(":") ?: return -1
+        if (parts.size != 2) return -1
+        val h = parts[0].toIntOrNull() ?: return -1
+        val m = parts[1].toIntOrNull() ?: return -1
+        return if (h in 0..23 && m in 0..59) h * 60 + m else -1
+    }
+
+    private fun loadSleepSettings() {
+        sleepAtMin = parseMinutes(prefs.getString(FramePrefs.SLEEP_AT, null))
+        wakeAtMin = parseMinutes(prefs.getString(FramePrefs.WAKE_AT, null))
+        sleepCmd = prefs.getString(FramePrefs.SLEEP_CMD, null)
+        sleepCmdId = prefs.getLong(FramePrefs.SLEEP_CMD_ID, 0L)
+        sleepCmdAt = prefs.getLong(FramePrefs.SLEEP_CMD_AT, 0L)
+    }
+
+    /** New sleep settings from the server (UI thread). */
+    private fun applySleepInfo(info: SleepInfo) {
+        val editor = prefs.edit()
+        val sleepAt = parseMinutes(info.sleepAt)
+        val wakeAt = parseMinutes(info.wakeAt)
+        if (sleepAt != sleepAtMin || wakeAt != wakeAtMin) {
+            sleepAtMin = sleepAt
+            wakeAtMin = wakeAt
+            editor.putString(FramePrefs.SLEEP_AT, info.sleepAt ?: "")
+                .putString(FramePrefs.WAKE_AT, info.wakeAt ?: "")
+        }
+        if (info.commandId != sleepCmdId) {
+            sleepCmdId = info.commandId
+            sleepCmd = info.command
+            val age = (info.commandAgeSeconds ?: 0L) * 1000L
+            sleepCmdAt = System.currentTimeMillis() - age
+            editor.putString(FramePrefs.SLEEP_CMD, sleepCmd ?: "")
+                .putLong(FramePrefs.SLEEP_CMD_ID, sleepCmdId)
+                .putLong(FramePrefs.SLEEP_CMD_AT, sleepCmdAt)
+        }
+        editor.apply()
+        evaluateSleep()
+    }
+
+    /** Whether the schedule says "asleep" now; null without a schedule. */
+    private fun scheduledAsleep(now: java.util.Calendar): Boolean? {
+        val s = sleepAtMin
+        val w = wakeAtMin
+        if (s < 0 || w < 0 || s == w) return null
+        val m = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+        return if (s < w) m in s until w else m >= s || m < w
+    }
+
+    /** Wall-clock time of the last scheduled switch; null without a schedule. */
+    private fun lastScheduledSwitch(nowMs: Long): Long? {
+        if (sleepAtMin < 0 || wakeAtMin < 0 || sleepAtMin == wakeAtMin) return null
+        var latest = Long.MIN_VALUE
+        for (minutes in intArrayOf(sleepAtMin, wakeAtMin)) {
+            val c = java.util.Calendar.getInstance()
+            c.timeInMillis = nowMs
+            c.set(java.util.Calendar.HOUR_OF_DAY, minutes / 60)
+            c.set(java.util.Calendar.MINUTE, minutes % 60)
+            c.set(java.util.Calendar.SECOND, 0)
+            c.set(java.util.Calendar.MILLISECOND, 0)
+            if (c.timeInMillis > nowMs) c.add(java.util.Calendar.DAY_OF_MONTH, -1)
+            latest = maxOf(latest, c.timeInMillis)
+        }
+        return latest
+    }
+
+    /** Decide whether the frame should sleep now, and do it. UI thread. */
+    private fun evaluateSleep() {
+        if (!running || frameView.visibility != View.VISIBLE) return
+        val nowMs = System.currentTimeMillis()
+        val now = java.util.Calendar.getInstance()
+        var want = scheduledAsleep(now) ?: false
+        var newest = lastScheduledSwitch(nowMs) ?: Long.MIN_VALUE
+        val cmd = sleepCmd
+        if (cmd != null && sleepCmdAt > newest) {
+            want = cmd == "sleep"
+            newest = sleepCmdAt
+        }
+        if (touchWakeAt > newest) want = false
+        if (want != sleeping) {
+            if (want) goToSleep() else wakeUp()
+        }
+    }
+
+    private fun goToSleep() {
+        endBrowse()
+        sleeping = true
+        sleepStartedAt = SystemClock.elapsedRealtime()
+        panAnimator?.cancel()
+        sleepView.visibility = View.VISIBLE
+        statusView.visibility = View.GONE
+        applyClockVisibility()
+        setWindowBrightness(0f)
+        sleepingReal = screenOff()
+        reportSleepState()
+    }
+
+    private fun wakeUp() {
+        sleeping = false
+        sleepView.visibility = View.GONE
+        setWindowBrightness(WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE)
+        if (sleepingReal) screenOn()
+        sleepingReal = false
+        resumeSlideshow = true
+        applyClockVisibility()
+        refreshPan()
+        reportSleepState()
+    }
+
+    private fun setWindowBrightness(value: Float) {
+        val attributes = window.attributes
+        attributes.screenBrightness = value
+        window.attributes = attributes
+    }
+
+    /**
+     * Switch the screen really off; only possible when the app is the device
+     * owner. Otherwise the frame just shows black at the lowest brightness.
+     */
+    private fun screenOff(): Boolean {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        if (!dpm.isDeviceOwnerApp(packageName)) return false
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    // Wake straight into the frame, not onto a lock screen.
+                    dpm.setKeyguardDisabled(ComponentName(this, AdminReceiver::class.java), true)
+                } catch (e: Exception) {
+                    // A screen lock with a PIN keeps the lock screen; fine.
+                }
+            }
+            dpm.lockNow()
+            true
+        } catch (e: SecurityException) {
+            Log.w("MemoryLink", "Cannot switch the screen off; showing black instead", e)
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun screenOn() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+            "memorylink:wake",
+        )
+        wakeLock.acquire(5_000L)
+    }
+
+    /** Tell the server at once that the frame went to sleep or woke up. */
+    private fun reportSleepState() {
+        val c = client ?: return
+        val w = screenWidth
+        val h = screenHeight
+        val asleep = sleeping
+        Thread {
+            try {
+                c.reportHeartbeat(appVersionCode, appVersionName, w, h, asleep)
+            } catch (e: Exception) {
+                // The next poll reports it anyway.
+            }
+        }.start()
     }
 
     /** Remember the screen's size in pixels, as the tablet is held now. */
@@ -709,7 +910,7 @@ class MainActivity : Activity() {
 
     private fun applyClockVisibility() {
         val visible = clockEnabled && frameView.visibility == View.VISIBLE &&
-            !browseView.gridVisible
+            !browseView.gridVisible && !sleeping
         clockView.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
@@ -858,6 +1059,7 @@ class MainActivity : Activity() {
     }
 
     private fun showConfig() {
+        if (sleeping) wakeUp()
         endBrowse()
         browseView.visibility = View.GONE
         resetNextFrame()
@@ -888,6 +1090,8 @@ class MainActivity : Activity() {
         running = true
         frameThread = Thread({ frameLoop() }, "frame-loop").also { it.start() }
         startBluetoothScanning()
+        // Started during sleeping hours (or after Sleep): go dark right away.
+        sleepHandler.post { evaluateSleep() }
     }
 
     private fun stopFrame() {
@@ -910,6 +1114,7 @@ class MainActivity : Activity() {
         var stateBlur = false
         var stateDisplayMode = "fit"
         var stateOrientation = prefs.getString(FramePrefs.ORIENTATION_LOCK, "auto") ?: "auto"
+        var stateSleepToken = ""
         var stateRestartId = 0L
         var lastRestartId = prefs.getLong(FramePrefs.HANDLED_RESTART, 0L)
         var pendingState: FrameState? = null
@@ -942,6 +1147,9 @@ class MainActivity : Activity() {
                     prefs.edit().putString(FramePrefs.ORIENTATION_LOCK, state.orientation).apply()
                 }
                 stateOrientation = state.orientation
+                stateSleepToken = state.sleep.token()
+                val sleepInfo = state.sleep
+                runOnUiThread { applySleepInfo(sleepInfo) }
                 panSeconds = state.intervalSeconds
                 stateRestartId = state.restartId
                 if (state.restartId > lastRestartId) {
@@ -962,7 +1170,9 @@ class MainActivity : Activity() {
                 }
                 clearStatus()
                 try {
-                    client!!.reportHeartbeat(appVersionCode, appVersionName, screenWidth, screenHeight)
+                    client!!.reportHeartbeat(
+                        appVersionCode, appVersionName, screenWidth, screenHeight, sleeping
+                    )
                 } catch (e: Exception) {
                     // Best effort; the web UI will show the frame as offline
                     // if heartbeats stop arriving.
@@ -990,7 +1200,7 @@ class MainActivity : Activity() {
                 }
 
                 val single = state.single
-                if (browsing) {
+                if (browsing || sleeping) {
                     // Leave the screen to the viewer; keep polling the server.
                 } else if (state.mode == "single" && single != null) {
                     if (showImage(single)) lastUrl = single.url
@@ -1069,6 +1279,7 @@ class MainActivity : Activity() {
                     stateBlur,
                     stateDisplayMode,
                     stateOrientation,
+                    stateSleepToken,
                     stateRestartId,
                     waitSeconds,
                 )
@@ -2060,6 +2271,15 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Someone switched the screen on (power button) while it was off for
+        // sleep: treat that like a touch.
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (sleeping && sleepingReal && pm.isInteractive &&
+            SystemClock.elapsedRealtime() - sleepStartedAt > 3_000L
+        ) {
+            touchWakeAt = System.currentTimeMillis()
+            evaluateSleep()
+        }
         if (running && hasBluetoothPermissions()) {
             startBluetoothScanning()
         }
@@ -2069,6 +2289,7 @@ class MainActivity : Activity() {
         super.onDestroy()
         clockHandler.removeCallbacks(clockTicker)
         browseHandler.removeCallbacksAndMessages(null)
+        sleepHandler.removeCallbacksAndMessages(null)
         panAnimator?.cancel()
         stopFrame()
         browseExecutor.shutdownNow()
@@ -2119,6 +2340,9 @@ class MainActivity : Activity() {
 
         /** ... and up to this much longer while the tablet looks for a network. */
         private const val SPLASH_WIFI_EXTRA_MS = 7_000L
+
+        /** How often the frame checks its sleep schedule. */
+        private const val SLEEP_CHECK_MS = 20_000L
 
         /** Height of the tag chips above the photo grid. */
         private const val TAG_BAR_DP = 64

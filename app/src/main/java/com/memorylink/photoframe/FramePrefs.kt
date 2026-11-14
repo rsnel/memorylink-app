@@ -16,6 +16,14 @@ object FramePrefs {
     /** auto, portrait or landscape: set from the server, kept for offline starts. */
     const val ORIENTATION_LOCK = "orientation_lock"
 
+    // Sleep schedule (HH:MM, empty = off) and the last Sleep/Wake command from
+    // the server, kept so the frame also follows them away from home.
+    const val SLEEP_AT = "sleep_at"
+    const val WAKE_AT = "wake_at"
+    const val SLEEP_CMD = "sleep_cmd"
+    const val SLEEP_CMD_ID = "sleep_cmd_id"
+    const val SLEEP_CMD_AT = "sleep_cmd_at"
+
     /** The installation's stable UUID, generated on first use. */
     fun ensureFrameId(prefs: SharedPreferences): String {
         prefs.getString(FRAME_ID, null)?.let { return it }

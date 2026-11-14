@@ -45,6 +45,38 @@ data class UpdateRef(
 /** A nearby Bluetooth device reported to the server. */
 data class BluetoothSeen(val address: String, val name: String?, val rssi: Int)
 
+/**
+ * Sleep settings from the server: the last Sleep/Wake command (with its age,
+ * so the server's clock doesn't matter) and the nightly schedule.
+ */
+data class SleepInfo(
+    val command: String?,
+    val commandId: Long,
+    val commandAgeSeconds: Long?,
+    val sleepAt: String?,
+    val wakeAt: String?,
+) {
+    /** Must match the server's sleep_token(), for the long poll. */
+    fun token(): String = "$commandId|${sleepAt ?: ""}|${wakeAt ?: ""}"
+
+    companion object {
+        val NONE = SleepInfo(null, 0, null, null, null)
+
+        fun fromJson(o: JSONObject?): SleepInfo {
+            if (o == null) return NONE
+            val schedule = o.optJSONObject("schedule")
+            return SleepInfo(
+                command = o.optString("command", "").takeIf { it == "sleep" || it == "wake" },
+                commandId = o.optLong("command_id", 0),
+                commandAgeSeconds = if (o.isNull("command_age_seconds")) null
+                    else o.optLong("command_age_seconds"),
+                sleepAt = schedule?.optString("sleep_at")?.takeIf { it.isNotEmpty() },
+                wakeAt = schedule?.optString("wake_at")?.takeIf { it.isNotEmpty() },
+            )
+        }
+    }
+}
+
 /** Orientation lock values sent by the server. */
 val ORIENTATIONS = listOf("auto", "portrait", "landscape")
 
@@ -63,6 +95,7 @@ data class FrameState(
     val displayMode: String,
     /** auto, portrait or landscape. */
     val orientation: String,
+    val sleep: SleepInfo,
     val restartId: Long,
     val transitions: List<String>,
     val single: ImageRef?,
@@ -94,6 +127,7 @@ data class FrameState(
                 random = o.optBoolean("random", false),
                 showClock = o.optBoolean("show_clock", false),
                 blurBackground = o.optBoolean("blur_background", false),
+                sleep = SleepInfo.fromJson(o.optJSONObject("sleep")),
                 orientation = o.optString("orientation", "auto").let { mode ->
                     if (mode in ORIENTATIONS) mode else "auto"
                 },
@@ -203,12 +237,18 @@ class FrameClient(baseUrl: String, private val frameId: String) {
     }
 
     /** Tell the server this frame is still alive; called on every poll. */
-    fun reportHeartbeat(versionCode: Long, versionName: String, screenWidth: Int, screenHeight: Int) {
+    fun reportHeartbeat(
+        versionCode: Long,
+        versionName: String,
+        screenWidth: Int,
+        screenHeight: Int,
+        asleep: Boolean,
+    ) {
         val encodedName = java.net.URLEncoder.encode(versionName, "UTF-8")
         val conn = open(
             framePath(
                 "/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName" +
-                    "&screen_width=$screenWidth&screen_height=$screenHeight"
+                    "&screen_width=$screenWidth&screen_height=$screenHeight&asleep=$asleep"
             )
         )
         try {
@@ -269,6 +309,7 @@ class FrameClient(baseUrl: String, private val frameId: String) {
         blurBackground: Boolean,
         displayMode: String,
         orientation: String,
+        sleepToken: String,
         restartId: Long,
         timeoutSeconds: Int,
     ): FrameState? {
@@ -278,6 +319,7 @@ class FrameClient(baseUrl: String, private val frameId: String) {
                     "&update_status=$updateStatus&show_clock=$showClock" +
                     "&blur_background=$blurBackground&display_mode=$displayMode" +
                     "&orientation=$orientation" +
+                    "&sleep=" + java.net.URLEncoder.encode(sleepToken, "UTF-8") +
                     "&restart_id=$restartId" +
                     "&timeout=$timeoutSeconds"
             )
