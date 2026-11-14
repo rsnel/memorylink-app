@@ -150,6 +150,20 @@
   }
   @media (max-width: 900px) { .away { grid-template-columns: 1fr; } }
 
+  /* portrait and landscape */
+  .orient { display: flex; gap: 40px; align-items: flex-end; justify-content: center; flex-wrap: wrap; }
+  .tablet {
+    margin: 0;
+    background: #1b1c20;
+    border-radius: 26px;
+    padding: 16px;
+    box-shadow: 0 30px 60px -30px rgba(80,40,10,.6), inset 0 0 0 2px #2c2d33;
+  }
+  .tablet img { border-radius: 8px; }
+  .tablet.land { width: min(620px, 100%); }
+  .tablet.port { width: min(270px, 60%); }
+  .tablet figcaption { color: #9f978f; margin-top: 12px; }
+
   /* how it works */
   .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 14px; align-items: stretch; margin-top: 8px; }
   .flow .node { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; text-align: center; }
@@ -215,6 +229,7 @@
     <a href="#why">Why</a>
     <a href="#phone">On the phone</a>
     <a href="#away">Take it along</a>
+    <a href="#orientation">Portrait &amp; landscape</a>
     <a href="#how">How it works</a>
     <a href="#webapp">Web app</a>
     <a href="#setup">Set up</a>
@@ -332,9 +347,10 @@
             the other photos in the usual order.</p></div></li>
         <li><span class="g">⤡</span><div><b>Pinch</b>
           <p>See many photos at once, from 2×2 up to 8×8. Pinch further for more,
-            the other way for fewer.</p></div></li>
+            the other way for fewer. Tap a tag at the top to see only those photos.</p></div></li>
         <li><span class="g">☝︎</span><div><b>Tap a photo</b>
-          <p>Shows it full size. Press back, or pinch again, to return to the overview.</p></div></li>
+          <p>Shows it full size. The arrow at the top left, back, or pinching again
+            returns to the overview.</p></div></li>
       </ul>
       <p class="note">
         Back home, the frame returns to its slideshow by itself after three minutes
@@ -429,6 +445,27 @@
   </div>
 </section>
 
+<section id="orientation" class="alt">
+  <div class="wrap">
+    <h2>Upright or on its side</h2>
+    <p class="intro">
+      MemoryLink works with the tablet in portrait and in landscape. Put it where it
+      fits best, and turn it whenever you like: the photos follow. Even the welcome
+      screen has a frame of the right shape, with the last photo shown in it.
+    </p>
+    <div class="orient">
+      <figure class="tablet land">
+        <img src="img/splash-landscape.webp" alt="The MemoryLink welcome screen on a tablet held sideways: a landscape photo frame on a table" loading="lazy" width="1392" height="752">
+        <figcaption>Landscape</figcaption>
+      </figure>
+      <figure class="tablet port">
+        <img src="img/splash-portrait.webp" alt="The MemoryLink welcome screen on a tablet held upright: a portrait photo frame on a table" loading="lazy" width="752" height="1392">
+        <figcaption>Portrait</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
 <section id="frame">
   <div class="wrap">
     <h2>The frame looks after itself</h2>
@@ -446,9 +483,10 @@
         <p>Every photo is also stored on the tablet. If the connection drops, the
           frame keeps the current photo up, you can still swipe through all photos,
           and it picks up again by itself when the connection is back.</p></div>
-      <div><h3>Portrait photos look good too</h3>
-        <p>A photo that doesn't fill the screen gets a soft, blurred copy of itself
-          behind it instead of black bars.</p></div>
+      <div><h3>Every photo looks good</h3>
+        <p>For photos that don't have the shape of the screen, choose: zoom in to fill
+          it, show the whole photo with a black border or on a soft blurred copy of
+          itself, or zoom in and let the frame slowly pan across the photo.</p></div>
       <div><h3>Updates from a distance</h3>
         <p>A new version of the app can be sent to the frame from the web page, so
           you never need to visit just to update it.</p></div>

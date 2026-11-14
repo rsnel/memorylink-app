@@ -12,6 +12,10 @@ has the frame doesn't need to do anything: it starts by itself and shows photos.
   2×2 to 8×8 overview, tap a photo to open it. This also works without a
   server: the frame keeps a copy of every photo. The slideshow returns after
   3 minutes without a touch, counted only while the server is reachable.
+  In the overview, tag chips at the top narrow the photos to one tag; a photo
+  opened from the overview has a back arrow.
+- Works in portrait and landscape; the splash screen (with the last photo in
+  its frame) matches how the tablet is held.
 - Debug builds are available as artifacts of the
   [GitHub Actions runs](https://github.com/rsnel/memorylink-app/actions).
 - On first start, enter the HTTPS address of your server and choose
