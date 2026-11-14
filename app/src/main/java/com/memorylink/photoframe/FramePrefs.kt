@@ -13,6 +13,9 @@ object FramePrefs {
     const val LAST_SHOWN_URL = "last_shown_url"
     const val HANDLED_RESTART = "handled_restart_id"
 
+    /** auto, portrait or landscape: set from the server, kept for offline starts. */
+    const val ORIENTATION_LOCK = "orientation_lock"
+
     /** The installation's stable UUID, generated on first use. */
     fun ensureFrameId(prefs: SharedPreferences): String {
         prefs.getString(FRAME_ID, null)?.let { return it }

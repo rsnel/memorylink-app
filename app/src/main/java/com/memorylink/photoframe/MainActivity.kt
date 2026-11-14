@@ -18,6 +18,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.animation.ValueAnimator
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -104,6 +105,16 @@ class MainActivity : Activity() {
     /** One pan across the photo takes this long (the slideshow interval). */
     @Volatile
     private var panSeconds = 30
+
+    /** Screen size in pixels as the tablet is held now; sent to the server. */
+    @Volatile
+    private var screenWidth = 0
+
+    @Volatile
+    private var screenHeight = 0
+
+    /** auto, portrait or landscape (from the server). UI thread. */
+    private var orientationLock = "auto"
 
     /** The splash artwork in use; chosen from how the tablet is held. */
     private var splashLandscape = false
@@ -288,7 +299,15 @@ class MainActivity : Activity() {
         // Show the artwork that matches how the tablet is held right now. The
         // app never asks for an orientation, so the splash doesn't rotate the
         // screen. Show it briefly, then fade it away over whatever is behind it.
-        splashLandscape = isLandscapeNow()
+        // A lock set on the server holds even when the frame starts without it.
+        applyOrientationLock(prefs.getString(FramePrefs.ORIENTATION_LOCK, "auto") ?: "auto")
+        measureScreen()
+        // With a lock the screen turns only after this, so go by the lock.
+        splashLandscape = when (orientationLock) {
+            "portrait" -> false
+            "landscape" -> true
+            else -> isLandscapeNow()
+        }
         splashView.setImageResource(splashResource())
         splashShownAt = SystemClock.elapsedRealtime()
         splashView.postDelayed({ hideSplashWhenReady() }, SPLASH_MIN_MS)
@@ -388,6 +407,51 @@ class MainActivity : Activity() {
         }
         // The pan depends on the screen's shape.
         frameView.post { refreshPan() }
+        // Tell the server right away, so the web page can follow the turn.
+        val before = screenWidth to screenHeight
+        measureScreen()
+        if (before != (screenWidth to screenHeight)) {
+            val c = client
+            if (c != null) {
+                val w = screenWidth
+                val h = screenHeight
+                Thread {
+                    try {
+                        c.reportHeartbeat(appVersionCode, appVersionName, w, h)
+                    } catch (e: Exception) {
+                        // The next poll reports it anyway.
+                    }
+                }.start()
+            }
+        }
+    }
+
+    /** Remember the screen's size in pixels, as the tablet is held now. */
+    private fun measureScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.currentWindowMetrics.bounds
+            screenWidth = bounds.width()
+            screenHeight = bounds.height()
+        } else {
+            val size = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealSize(size)
+            screenWidth = size.x
+            screenHeight = size.y
+        }
+    }
+
+    /**
+     * Hold the screen upright, on its side, or let it follow the tablet.
+     * Either way up is allowed, so the tablet can stand on any edge.
+     */
+    private fun applyOrientationLock(lock: String) {
+        orientationLock = lock
+        requestedOrientation = when (lock) {
+            "portrait" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
     private fun personalizeSplash() {
@@ -845,6 +909,7 @@ class MainActivity : Activity() {
         var stateShowClock = false
         var stateBlur = false
         var stateDisplayMode = "fit"
+        var stateOrientation = prefs.getString(FramePrefs.ORIENTATION_LOCK, "auto") ?: "auto"
         var stateRestartId = 0L
         var lastRestartId = prefs.getLong(FramePrefs.HANDLED_RESTART, 0L)
         var pendingState: FrameState? = null
@@ -873,6 +938,10 @@ class MainActivity : Activity() {
                 stateShowClock = state.showClock
                 stateBlur = state.blurBackground
                 stateDisplayMode = state.displayMode
+                if (state.orientation != stateOrientation) {
+                    prefs.edit().putString(FramePrefs.ORIENTATION_LOCK, state.orientation).apply()
+                }
+                stateOrientation = state.orientation
                 panSeconds = state.intervalSeconds
                 stateRestartId = state.restartId
                 if (state.restartId > lastRestartId) {
@@ -889,10 +958,11 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     setClockEnabled(stateShowClock)
                     setDisplayMode(stateDisplayMode)
+                    if (stateOrientation != orientationLock) applyOrientationLock(stateOrientation)
                 }
                 clearStatus()
                 try {
-                    client!!.reportHeartbeat(appVersionCode, appVersionName)
+                    client!!.reportHeartbeat(appVersionCode, appVersionName, screenWidth, screenHeight)
                 } catch (e: Exception) {
                     // Best effort; the web UI will show the frame as offline
                     // if heartbeats stop arriving.
@@ -998,6 +1068,7 @@ class MainActivity : Activity() {
                     stateShowClock,
                     stateBlur,
                     stateDisplayMode,
+                    stateOrientation,
                     stateRestartId,
                     waitSeconds,
                 )
@@ -1457,10 +1528,13 @@ class MainActivity : Activity() {
 
         override fun onBrowseOpen(index: Int) {
             touchBrowse()
-            closeGrid()
-            openedFromGrid = true
-            updateBackButton()
-            showBrowsed(index, Transition.ZOOM_OUT)
+            // Keep the grid up until the photo is ready, then swap at once:
+            // no glimpse of the previous photo, no transition.
+            showBrowsed(index, null) {
+                closeGrid()
+                openedFromGrid = true
+                updateBackButton()
+            }
         }
 
         override fun onBrowseLongPress() {
@@ -1636,7 +1710,11 @@ class MainActivity : Activity() {
     }
 
     /** Show browseItems[index] with the given transition. */
-    private fun showBrowsed(index: Int, kind: Transition) {
+    /**
+     * Show browseItems[index] with the given transition, or at once when
+     * [kind] is null; [onShown] runs when the photo is on screen.
+     */
+    private fun showBrowsed(index: Int, kind: Transition?, onShown: (() -> Unit)? = null) {
         if (index !in browseItems.indices) return
         browseIndex = index
         val ref = browseItems[index]
@@ -1650,11 +1728,17 @@ class MainActivity : Activity() {
             }
             val backdrop = if (bmp != null && blurEnabled) blurredBackdrop(bmp) else null
             runOnUiThread {
-                if (bmp != null && browsing && request == browseRequest) {
+                if (!browsing || request != browseRequest) return@runOnUiThread
+                if (bmp != null) {
                     currentUrl = ref.url
                     prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
-                    transitionTo(bmp, backdrop, ref.url, kind, BROWSE_TRANSITION_MS)
+                    if (kind == null) {
+                        showAtOnce(bmp, backdrop, ref.url)
+                    } else {
+                        transitionTo(bmp, backdrop, ref.url, kind, BROWSE_TRANSITION_MS)
+                    }
                 }
+                onShown?.invoke()
             }
             if (bmp != null && ref.id >= 0 && serverReachable()) {
                 try {
@@ -1916,6 +2000,15 @@ class MainActivity : Activity() {
             }
         }
         animator.withEndAction { finishTransition(bmp) }
+    }
+
+    /** Put [bmp] on screen without any transition. */
+    private fun showAtOnce(bmp: Bitmap, backdrop: Bitmap?, url: String?) {
+        screenUrl = url
+        resetNextFrame()
+        if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
+        frameView.setImageBitmap(bmp)
+        refreshPan()
     }
 
     private fun finishTransition(bmp: Bitmap) {

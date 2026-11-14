@@ -45,6 +45,9 @@ data class UpdateRef(
 /** A nearby Bluetooth device reported to the server. */
 data class BluetoothSeen(val address: String, val name: String?, val rssi: Int)
 
+/** Orientation lock values sent by the server. */
+val ORIENTATIONS = listOf("auto", "portrait", "landscape")
+
 /** How photos that don't have the screen's shape are shown. */
 val DISPLAY_MODES = listOf("fill", "fit", "blur", "pan")
 
@@ -58,6 +61,8 @@ data class FrameState(
     val blurBackground: Boolean,
     /** fill, fit, blur or pan; see DisplayMode. */
     val displayMode: String,
+    /** auto, portrait or landscape. */
+    val orientation: String,
     val restartId: Long,
     val transitions: List<String>,
     val single: ImageRef?,
@@ -89,6 +94,9 @@ data class FrameState(
                 random = o.optBoolean("random", false),
                 showClock = o.optBoolean("show_clock", false),
                 blurBackground = o.optBoolean("blur_background", false),
+                orientation = o.optString("orientation", "auto").let { mode ->
+                    if (mode in ORIENTATIONS) mode else "auto"
+                },
                 displayMode = o.optString("display_mode", "").let { mode ->
                     if (mode in DISPLAY_MODES) mode
                     else if (o.optBoolean("blur_background", false)) "blur" else "fit"
@@ -195,10 +203,13 @@ class FrameClient(baseUrl: String, private val frameId: String) {
     }
 
     /** Tell the server this frame is still alive; called on every poll. */
-    fun reportHeartbeat(versionCode: Long, versionName: String) {
+    fun reportHeartbeat(versionCode: Long, versionName: String, screenWidth: Int, screenHeight: Int) {
         val encodedName = java.net.URLEncoder.encode(versionName, "UTF-8")
         val conn = open(
-            framePath("/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName")
+            framePath(
+                "/api/frame/heartbeat?version_code=$versionCode&version_name=$encodedName" +
+                    "&screen_width=$screenWidth&screen_height=$screenHeight"
+            )
         )
         try {
             conn.requestMethod = "POST"
@@ -257,6 +268,7 @@ class FrameClient(baseUrl: String, private val frameId: String) {
         showClock: Boolean,
         blurBackground: Boolean,
         displayMode: String,
+        orientation: String,
         restartId: Long,
         timeoutSeconds: Int,
     ): FrameState? {
@@ -265,6 +277,7 @@ class FrameClient(baseUrl: String, private val frameId: String) {
                 "/api/frame/wait?version=$version&update_id=$updateId" +
                     "&update_status=$updateStatus&show_clock=$showClock" +
                     "&blur_background=$blurBackground&display_mode=$displayMode" +
+                    "&orientation=$orientation" +
                     "&restart_id=$restartId" +
                     "&timeout=$timeoutSeconds"
             )
