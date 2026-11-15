@@ -76,6 +76,7 @@ class MainActivity : Activity() {
 
     private lateinit var frameView: ImageView
     private lateinit var nextFrameView: ImageView
+    private lateinit var transition3D: Transition3DView
     private lateinit var backdropView: ImageView
     private lateinit var backdropDim: View
     private lateinit var configView: View
@@ -306,6 +307,7 @@ class MainActivity : Activity() {
 
         frameView = findViewById(R.id.frameView)
         nextFrameView = findViewById(R.id.frameViewNext)
+        transition3D = findViewById(R.id.transition3D)
         backdropView = findViewById(R.id.backdropView)
         backdropDim = findViewById(R.id.backdropDim)
         configView = findViewById(R.id.configView)
@@ -2236,6 +2238,81 @@ class MainActivity : Activity() {
 
     private enum class Transition {
         DISSOLVE, SLIDE_LEFT, SLIDE_RIGHT, SLIDE_UP, SLIDE_DOWN, ZOOM_IN, ZOOM_OUT,
+
+        // 3D, drawn by Transition3DView (same names there).
+        LEAPFROG, TURNAROUND, CUBE, DOOR, FALL_AWAY, CAROUSEL, CARD_STACK, BLINDS,
+    }
+
+    /** The 3D counterpart of [kind], or null for the flat transitions. */
+    private fun kind3D(kind: Transition): Transition3DView.Kind? =
+        Transition3DView.Kind.values().firstOrNull { it.name == kind.name }
+
+    /** How long each 3D transition takes. */
+    private fun duration3D(kind: Transition3DView.Kind): Long = when (kind) {
+        Transition3DView.Kind.LEAPFROG, Transition3DView.Kind.TURNAROUND -> 1700L
+        Transition3DView.Kind.FALL_AWAY, Transition3DView.Kind.CAROUSEL,
+        Transition3DView.Kind.BLINDS -> 1500L
+        Transition3DView.Kind.CUBE, Transition3DView.Kind.DOOR -> 1300L
+        Transition3DView.Kind.CARD_STACK -> 1200L
+    }
+
+    /** Picture of what the photo area shows now (backdrop and photo). */
+    private fun snapshotScreen(): Bitmap? {
+        val w = frameView.width
+        val h = frameView.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+            val canvas = Canvas(bmp)
+            canvas.drawColor(Color.BLACK)
+            for (view in arrayOf(backdropView, backdropDim, frameView)) {
+                if (view.visibility != View.VISIBLE) continue
+                if (view.alpha < 1f) {
+                    val save = canvas.saveLayerAlpha(
+                        0f, 0f, w.toFloat(), h.toFloat(), (view.alpha * 255f).toInt(),
+                    )
+                    view.draw(canvas)
+                    canvas.restoreToCount(save)
+                } else {
+                    view.draw(canvas)
+                }
+            }
+            bmp
+        } catch (e: OutOfMemoryError) {
+            null
+        }
+    }
+
+    /**
+     * Show [bmp] with a 3D transition: take a picture of the screen now, put
+     * the new photo in place underneath, take a picture of that, and let
+     * Transition3DView play between the two. False if that isn't possible
+     * (then the caller falls back to a flat transition).
+     */
+    private fun transition3DTo(
+        bmp: Bitmap,
+        backdrop: Bitmap?,
+        url: String?,
+        kind: Transition3DView.Kind,
+    ): Boolean {
+        panAnimator?.cancel()
+        val old = snapshotScreen() ?: return false
+        screenUrl = url
+        if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
+        frameView.setImageBitmap(bmp)
+        if (displayMode == "pan") panMatrix(frameView, 0f)?.let { frameView.imageMatrix = it }
+        val new = snapshotScreen()
+        if (new == null) {
+            refreshPan()
+            return true
+        }
+        val direction = when (kind) {
+            Transition3DView.Kind.CUBE -> intArrayOf(1, -1, 2, -2)[random.nextInt(4)]
+            Transition3DView.Kind.LEAPFROG, Transition3DView.Kind.FALL_AWAY -> 1
+            else -> if (random.nextBoolean()) 1 else -1
+        }
+        transition3D.start(kind, old, new, duration3D(kind), direction) { refreshPan() }
+        return true
     }
 
     /** Effects enabled in the web UI; an empty selection means all of them. */
@@ -2255,16 +2332,21 @@ class MainActivity : Activity() {
         forced: Transition? = null,
         durationMs: Long = 0L,
     ) {
-        screenUrl = url
+        val kinds = transitionKinds()
+        var kind = forced ?: kinds[random.nextInt(kinds.size)]
         resetNextFrame()
+        val kind3D = kind3D(kind)
+        if (kind3D != null) {
+            if (transition3DTo(bmp, backdrop, url, kind3D)) return
+            kind = Transition.DISSOLVE
+        }
+        screenUrl = url
         nextFrameView.setBackgroundColor(if (blurEnabled) Color.TRANSPARENT else Color.BLACK)
         if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
         nextFrameView.setImageBitmap(bmp)
         if (displayMode == "pan") panMatrix(nextFrameView, 0f)?.let { nextFrameView.imageMatrix = it }
         nextFrameView.visibility = View.VISIBLE
 
-        val kinds = transitionKinds()
-        val kind = forced ?: kinds[random.nextInt(kinds.size)]
         val duration = if (durationMs > 0L) durationMs else 550L + random.nextInt(450)
         val width = (if (frameView.width > 0) frameView.width
             else resources.displayMetrics.widthPixels).toFloat()
@@ -2307,6 +2389,11 @@ class MainActivity : Activity() {
                 animator.scaleX(1f).scaleY(1f).alpha(1f)
                     .setInterpolator(DecelerateInterpolator())
             }
+            else -> {
+                // 3D kinds are handled above; never reached.
+                nextFrameView.alpha = 0f
+                animator.alpha(1f)
+            }
         }
         animator.withEndAction { finishTransition(bmp) }
     }
@@ -2327,6 +2414,7 @@ class MainActivity : Activity() {
     }
 
     private fun resetNextFrame() {
+        transition3D.cancel()
         nextFrameView.animate().cancel()
         nextFrameView.alpha = 1f
         nextFrameView.translationX = 0f
