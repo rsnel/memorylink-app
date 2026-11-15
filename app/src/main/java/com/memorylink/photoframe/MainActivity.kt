@@ -197,7 +197,38 @@ class MainActivity : Activity() {
     // Keep at most two decoded frames. The frame only ever displays one image
     // at a time, and this device's heap is too small to hold the whole library
     // (a full 1080x1920 bitmap alone is ~8 MB).
-    private val bitmapCache = LruCache<String, Bitmap>(2)
+    // The last decoded photos. On Android 7 and older, a bitmap's pixels are
+    // freed only some time after it becomes garbage (two collections and a
+    // cleanup thread later), so with an 8 MB photo every few seconds the heap
+    // filled up and the frame stopped after about ten photos. Photos that
+    // leave the cache are therefore recycled explicitly, once they are no
+    // longer on screen.
+    private val bitmapCache = object : LruCache<String, Bitmap>(2) {
+        override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
+            if (oldValue !== newValue) releaseLater(oldValue)
+        }
+    }
+    private val releaseHandler = Handler(Looper.getMainLooper())
+
+    /** Recycle [bmp] a little later, unless it is (still or again) in use by then. */
+    private fun releaseLater(bmp: Bitmap) {
+        releaseHandler.postDelayed({
+            val inUse = isOnScreen(bmp) || bitmapCache.snapshot().values.any { it === bmp }
+            if (!inUse && !bmp.isRecycled) bmp.recycle()
+        }, RELEASE_DELAY_MS)
+    }
+
+    private fun isOnScreen(bmp: Bitmap): Boolean =
+        arrayOf(frameView, nextFrameView, backdropView, splashView).any { view ->
+            (view.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap === bmp
+        }
+
+    /** Note the heap use in the log, to spot memory trouble from a logcat. */
+    private fun logMemory(what: String) {
+        val rt = Runtime.getRuntime()
+        val used = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)
+        Log.i("MemoryLink", "$what: heap ${used} MB used of ${rt.maxMemory() / (1024 * 1024)} MB")
+    }
 
     @Volatile
     private var currentUrl: String? = null
@@ -974,7 +1005,11 @@ class MainActivity : Activity() {
             return
         }
         Thread {
-            val blurred = blurredBackdrop(source)
+            val blurred = try {
+                blurredBackdrop(source)
+            } catch (e: Exception) {
+                return@Thread // the photo was released meanwhile
+            }
             runOnUiThread {
                 if (blurEnabled && currentUrl == url) {
                     setBackdrop(blurred)
@@ -1609,6 +1644,7 @@ class MainActivity : Activity() {
         try {
             val bmp = bitmapCache.get(ref.url) ?: loadBitmap(ref).also {
                 bitmapCache.put(ref.url, it)
+                logMemory("Decoded ${it.width}x${it.height}")
             }
             currentUrl = ref.url
             prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
@@ -1624,6 +1660,13 @@ class MainActivity : Activity() {
             return true
         } catch (e: Exception) {
             setStatus("Could not load image: ${e.message}")
+            return false
+        } catch (e: OutOfMemoryError) {
+            // Free what can be freed and try again on the next round, instead
+            // of stopping the app.
+            Log.w("MemoryLink", "Out of memory loading ${ref.url}", e)
+            bitmapCache.evictAll()
+            System.gc()
             return false
         }
     }
@@ -2051,6 +2094,9 @@ class MainActivity : Activity() {
             val bmp = try {
                 bitmapCache.get(ref.url) ?: loadBitmap(ref).also { bitmapCache.put(ref.url, it) }
             } catch (e: Exception) {
+                null
+            } catch (e: OutOfMemoryError) {
+                bitmapCache.evictAll()
                 null
             }
             val backdrop = if (bmp != null && blurEnabled) blurredBackdrop(bmp) else null
@@ -2566,6 +2612,9 @@ class MainActivity : Activity() {
 
         /** ... and up to this much longer while the tablet looks for a network. */
         private const val SPLASH_WIFI_EXTRA_MS = 7_000L
+
+        /** Photos leaving the cache are recycled this long after (past any transition). */
+        private const val RELEASE_DELAY_MS = 4_000L
 
         /** How often the frame checks its sleep schedule. */
         private const val SLEEP_CHECK_MS = 20_000L
