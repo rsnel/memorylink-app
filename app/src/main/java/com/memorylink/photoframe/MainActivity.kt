@@ -353,6 +353,7 @@ class MainActivity : Activity() {
         clockTime = findViewById(R.id.clockTime)
         clockDate = findViewById(R.id.clockDate)
         browseView = findViewById(R.id.browseView)
+        startUiWatchdog()
         browseLabel = findViewById(R.id.browseLabel)
         browseBack = findViewById(R.id.browseBack)
         browseTagBar = findViewById(R.id.browseTagBar)
@@ -621,6 +622,7 @@ class MainActivity : Activity() {
         if (sleepingReal) screenOn()
         sleepingReal = false
         resumeSlideshow = true
+        wakeSlides()
         applyClockVisibility()
         refreshPan()
         reportSleepState()
@@ -1148,6 +1150,7 @@ class MainActivity : Activity() {
         stopFrame()
         running = true
         frameThread = Thread({ frameLoop() }, "frame-loop").also { it.start() }
+        slideThread = Thread({ slideLoop() }, "slideshow").also { it.start() }
         startBluetoothScanning()
         // Started during sleeping hours (or after Sleep): go dark right away.
         sleepHandler.post { evaluateSleep() }
@@ -1157,15 +1160,206 @@ class MainActivity : Activity() {
         running = false
         frameThread?.interrupt()
         frameThread = null
+        slideThread?.interrupt()
+        slideThread = null
         stopBluetoothScanning()
     }
 
-    private fun frameLoop() {
+    // ---- Slideshow and network, on separate threads -------------------------
+    // The slideshow thread changes photos from the slideshow the frame knows
+    // and never waits for the network; the network thread only talks to the
+    // server and updates what the frame knows. (When both were one thread, a
+    // slow server or flaky wifi held up the slideshow for 20 s and more.)
+
+    /** The slideshow as the frame knows it; always replaced as a whole. */
+    private class Slideshow(
+        val mode: String,
+        val single: ImageRef?,
+        val list: List<ImageRef>,
+        val random: Boolean,
+        val intervalSeconds: Int,
+        val version: Long,
+    )
+
+    @Volatile
+    private var slideshow = Slideshow("slideshow", null, emptyList(), false, 30, -1L)
+
+    @Volatile
+    private var slideThread: Thread? = null
+    private val slideLock = Object()
+
+    @Volatile
+    private var slideWake = false
+
+    /**
+     * Log (tag MemoryLink) when the UI thread is stuck for more than 3 s, with
+     * what it was doing, so a logcat shows where a hang comes from.
+     */
+    private fun startUiWatchdog() {
+        val thread = Thread({
+            val handler = Handler(Looper.getMainLooper())
+            try {
+                while (true) {
+                    val answered = java.util.concurrent.CountDownLatch(1)
+                    val sent = SystemClock.elapsedRealtime()
+                    handler.post { answered.countDown() }
+                    if (!answered.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                        val stack = Looper.getMainLooper().thread.stackTrace.joinToString("\n    at ")
+                        Log.w("MemoryLink", "UI thread stuck for 3 s, doing:\n    at $stack")
+                        answered.await()
+                        Log.w(
+                            "MemoryLink",
+                            "UI thread free again after ${SystemClock.elapsedRealtime() - sent} ms",
+                        )
+                    }
+                    Thread.sleep(2_000L)
+                }
+            } catch (e: InterruptedException) {
+                // Stopped.
+            }
+        }, "ui-watchdog")
+        thread.isDaemon = true
+        thread.start()
+    }
+
+    /** Let the slideshow thread look again right away (new state, Resume). */
+    private fun wakeSlides() {
+        synchronized(slideLock) {
+            slideWake = true
+            slideLock.notifyAll()
+        }
+    }
+
+    // Reports to the server go out on their own thread, so they can't hold up
+    // anything either. Only the latest photo is reported; if that fails it is
+    // sent again once the server answers.
+    private val reporter = Executors.newSingleThreadExecutor()
+    private val pendingReport = java.util.concurrent.atomic.AtomicLong(-1L)
+    private val heartbeatQueued = AtomicBoolean(false)
+
+    private fun reportShownLater(id: Long) {
+        if (id < 0L) return
+        pendingReport.set(id)
+        reporter.execute { flushReport() }
+    }
+
+    private fun flushReport() {
+        val id = pendingReport.getAndSet(-1L)
+        if (id < 0L) return
+        try {
+            val c = client ?: throw java.io.IOException("no server")
+            c.reportShown(id)
+        } catch (e: Exception) {
+            pendingReport.compareAndSet(-1L, id) // try again later, unless newer
+        }
+    }
+
+    private fun sendHeartbeatLater() {
+        if (!heartbeatQueued.compareAndSet(false, true)) return
+        reporter.execute {
+            heartbeatQueued.set(false)
+            try {
+                client?.reportHeartbeat(appVersionCode, appVersionName, screenWidth, screenHeight, sleeping)
+            } catch (e: Exception) {
+                // Best effort; the web UI shows the frame offline if they stop.
+            }
+        }
+    }
+
+    // A photo change is handed to the UI thread as "the latest photo": if the
+    // UI thread is held up, photos don't queue up and play in a burst
+    // afterwards; only the newest one is shown.
+    private val pendingPhoto = java.util.concurrent.atomic.AtomicReference<Runnable?>(null)
+
+    /** Show the photo on the UI thread; waits (a while) until it has started. */
+    private fun presentOnUi(bmp: Bitmap, backdrop: Bitmap?, url: String) {
+        val started = java.util.concurrent.CountDownLatch(1)
+        val job = Runnable {
+            if (!browsing && !sleeping) transitionTo(bmp, backdrop, url)
+            started.countDown()
+        }
+        if (pendingPhoto.getAndSet(job) == null) {
+            runOnUiThread { pendingPhoto.getAndSet(null)?.run() }
+        }
+        val prompt = started.await(UI_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        if (!prompt) Log.w("MemoryLink", "UI thread did not show a photo within ${UI_WAIT_MS} ms")
+    }
+
+    private fun slideLoop() {
         var lastVersion = -1L
         var nextSlideAt = 0L
         var images: List<ImageRef> = emptyList()
         var lastUrl: String? = null
         var nextIndex = 0
+        try {
+            while (running) {
+                if (resumeSlideshow) {
+                    resumeSlideshow = false
+                    nextSlideAt = 0L
+                }
+                var waitMs = SLIDE_IDLE_MS
+                val show = slideshow
+                // Download missing photos only while the server answers;
+                // otherwise play the photos on the tablet.
+                val online = serverReachable()
+                val single = show.single
+                if (browsing || sleeping) {
+                    // Leave the screen to the viewer, or to the night.
+                } else if (show.mode == "single" && single != null) {
+                    if ((online || isCached(single)) && showImage(single)) lastUrl = single.url
+                } else {
+                    if (show.version != lastVersion) {
+                        images = show.list
+                        lastVersion = show.version
+                        lastUrl = null
+                        nextIndex = 0
+                        nextSlideAt = 0L
+                    }
+                    if (images.isEmpty()) {
+                        if (online) showPlaceholder()
+                    } else {
+                        if (SystemClock.elapsedRealtime() >= nextSlideAt) {
+                            if (nextIndex >= images.size) nextIndex = 0
+                            var pick: ImageRef? = null
+                            if (show.random) {
+                                val playable = if (online) images else images.filter { isCached(it) }
+                                if (playable.isNotEmpty()) pick = randomImage(playable, lastUrl)
+                            } else {
+                                // In order; without a server skip photos not on the tablet.
+                                for (k in images.indices) {
+                                    val candidate = images[(nextIndex + k) % images.size]
+                                    if (online || isCached(candidate)) {
+                                        pick = candidate
+                                        nextIndex = (nextIndex + k) % images.size
+                                        break
+                                    }
+                                }
+                            }
+                            if (pick != null && showImage(pick)) {
+                                lastUrl = pick.url
+                                if (!show.random) nextIndex = (nextIndex + 1) % images.size
+                                // Counted from when the photo is on screen.
+                                nextSlideAt = SystemClock.elapsedRealtime() +
+                                    show.intervalSeconds.coerceAtLeast(5) * 1000L
+                            } else {
+                                nextSlideAt = SystemClock.elapsedRealtime() + SLIDE_RETRY_MS
+                            }
+                        }
+                        waitMs = (nextSlideAt - SystemClock.elapsedRealtime())
+                            .coerceIn(20L, SLIDE_MAX_WAIT_MS)
+                    }
+                }
+                synchronized(slideLock) {
+                    if (!slideWake) slideLock.wait(waitMs)
+                    slideWake = false
+                }
+            }
+        } catch (e: InterruptedException) {
+            // Stopped.
+        }
+    }
+
+    private fun frameLoop() {
         var stateVersion = -1L
         var stateUpdateId = 0L
         var stateUpdateStatus = ""
@@ -1177,97 +1371,17 @@ class MainActivity : Activity() {
         var stateRestartId = 0L
         var lastRestartId = prefs.getLong(FramePrefs.HANDLED_RESTART, 0L)
         var pendingState: FrameState? = null
-        var waitSeconds = LONGPOLL_SECONDS
         var failingSince = 0L
         var listsVersion = -1L
         var seenState = false
         var lastSingleId: Long? = null
-        // Photo shown without a connection, to report once the server is back.
-        var unreportedId = -1L
         var offlineSince = 0L
 
-        /**
-         * One step of the slideshow. [online]: the settings are fresh from the
-         * server and photos may be downloaded; otherwise the frame plays the
-         * last known slideshow with the photos it has on the tablet.
-         */
-        fun playStep(
-            mode: String,
-            single: ImageRef?,
-            list: List<ImageRef>,
-            random: Boolean,
-            intervalSeconds: Int,
-            version: Long,
-            online: Boolean,
-        ) {
-            if (resumeSlideshow) {
-                resumeSlideshow = false
-                nextSlideAt = 0L
-            }
-            if (browsing || sleeping) return // leave the screen to the viewer
-            if (mode == "single" && single != null) {
-                if ((online || isCached(single)) && showImage(single, report = online)) {
-                    if (!online && single.url != lastUrl) unreportedId = single.id
-                    lastUrl = single.url
-                }
-                return
-            }
-            if (version != lastVersion) {
-                images = list
-                lastVersion = version
-                lastUrl = null
-                nextIndex = 0
-                nextSlideAt = 0L
-            }
-            if (images.isEmpty()) {
-                if (online) showPlaceholder()
-                return
-            }
-            if (SystemClock.elapsedRealtime() < nextSlideAt) return
-            if (nextIndex >= images.size) nextIndex = 0
-            val next = if (random) {
-                val playable = if (online) images else images.filter { isCached(it) }
-                if (playable.isEmpty()) return
-                randomImage(playable, lastUrl)
-            } else {
-                // In order; without a connection skip photos not on the tablet.
-                var pick: ImageRef? = null
-                for (k in images.indices) {
-                    val candidate = images[(nextIndex + k) % images.size]
-                    if (online || isCached(candidate)) {
-                        pick = candidate
-                        nextIndex = (nextIndex + k) % images.size
-                        break
-                    }
-                }
-                pick ?: return
-            }
-            if (showImage(next, report = online)) {
-                if (!online) unreportedId = next.id
-                lastUrl = next.url
-                if (!random) nextIndex = (nextIndex + 1) % images.size
-                nextSlideAt = SystemClock.elapsedRealtime() + intervalSeconds.coerceAtLeast(5) * 1000L
-            }
-        }
-
-        /**
-         * No server: keep the slideshow going by itself, then wait a little
-         * before trying again (never past the next slide). The notice stays a
-         * while, then gets out of the way of the photos.
-         */
-        fun playOffline(retryMs: Long, message: String): Boolean {
+        /** Without a server: show why for a while, then keep out of the way. */
+        fun offlineNotice(message: String) {
             if (offlineSince == 0L) offlineSince = SystemClock.elapsedRealtime()
-            playStep(
-                knownMode, knownSingle, knownPlaylist, knownRandom, knownInterval,
-                knownVersion, online = false,
-            )
             val offlineFor = SystemClock.elapsedRealtime() - offlineSince
             if (currentUrl != null && offlineFor > OFFLINE_NOTICE_MS) clearStatus() else setStatus(message)
-            val untilNext = nextSlideAt - SystemClock.elapsedRealtime()
-            var pause = if (untilNext > 0L) minOf(retryMs, maxOf(250L, untilNext)) else retryMs
-            // While browsing, check often so Resume takes effect at once.
-            if (browsing) pause = minOf(pause, BROWSE_POLL_SECONDS * 1000L)
-            return sleepInterruptible(pause)
         }
 
         fun failureMessage(e: Exception): String {
@@ -1280,10 +1394,23 @@ class MainActivity : Activity() {
             }
         }
 
+        /** After a failure: tell, and wait a little before trying again. */
+        fun retryLater(e: Exception): Boolean {
+            return if (!networkAvailable()) {
+                failingSince = 0L
+                offlineNotice("Waiting for network…")
+                sleepInterruptible(NETWORK_RETRY_MS)
+            } else {
+                offlineNotice(failureMessage(e))
+                sleepInterruptible(POLL_MS)
+            }
+        }
+
         while (running) {
             if (!networkAvailable()) {
                 failingSince = 0L
-                if (!playOffline(NETWORK_RETRY_MS, "Waiting for network…")) break
+                offlineNotice("Waiting for network…")
+                if (!sleepInterruptible(NETWORK_RETRY_MS)) break
                 continue
             }
 
@@ -1325,16 +1452,13 @@ class MainActivity : Activity() {
                     if (stateOrientation != orientationLock) applyOrientationLock(stateOrientation)
                 }
                 clearStatus()
-                try {
-                    client!!.reportHeartbeat(
-                        appVersionCode, appVersionName, screenWidth, screenHeight, sleeping
-                    )
-                } catch (e: Exception) {
-                    // Best effort; the web UI will show the frame as offline
-                    // if heartbeats stop arriving.
-                }
+                sendHeartbeatLater()
                 enabledTransitions = state.transitions
                 state.update?.let { maybeInstallUpdate(it) }
+                slideshow = Slideshow(
+                    state.mode, state.single, state.images, state.random,
+                    state.intervalSeconds, state.version,
+                )
                 if (state.version != listsVersion) {
                     listsVersion = state.version
                     updateKnownLists(state)
@@ -1351,51 +1475,20 @@ class MainActivity : Activity() {
                 seenState = true
                 lastSingleId = singleId
 
-                // Back in contact: tell the server what was shown meanwhile.
-                if (unreportedId >= 0L) {
-                    try {
-                        client!!.reportShown(unreportedId)
-                        unreportedId = -1L
-                    } catch (e: Exception) {
-                        // Try again next time.
-                    }
-                }
-                playStep(
-                    state.mode, state.single, state.images, state.random,
-                    state.intervalSeconds, state.version, online = true,
-                )
-
-                // Don't let the long poll delay the next slide: cap it at the
-                // time remaining until the slideshow should advance.
-                waitSeconds = LONGPOLL_SECONDS
-                if (state.mode != "single" && images.isNotEmpty() && nextSlideAt > 0L) {
-                    val remainingMs = nextSlideAt - SystemClock.elapsedRealtime()
-                    waitSeconds = if (remainingMs <= 0L) {
-                        // The slide was due but could not be shown; retry soon.
-                        (POLL_MS / 1000L).toInt()
-                    } else {
-                        ((remainingMs + 999L) / 1000L).toInt()
-                            .coerceIn(1, LONGPOLL_SECONDS)
-                    }
-                }
-                // Check back often while browsing, so the slideshow returns
-                // promptly when browsing ends.
-                if (browsing) waitSeconds = minOf(waitSeconds, BROWSE_POLL_SECONDS)
+                // Back in contact: send what couldn't be reported meanwhile.
+                if (pendingReport.get() >= 0L) reporter.execute { flushReport() }
+                wakeSlides()
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
-                if (!networkAvailable()) {
-                    failingSince = 0L
-                    if (!playOffline(NETWORK_RETRY_MS, "Waiting for network…")) break
-                } else {
-                    if (!playOffline(POLL_MS, failureMessage(e))) break
-                }
+                if (!retryLater(e)) break
                 continue
             }
 
             try {
                 // Long poll: return as soon as the server has new state, so
-                // commands like "Show on frame" apply immediately.
+                // commands like "Show on frame" apply immediately. The
+                // slideshow doesn't wait for this; it runs on its own thread.
                 pendingState = client!!.waitForChange(
                     stateVersion,
                     stateUpdateId,
@@ -1406,18 +1499,13 @@ class MainActivity : Activity() {
                     stateOrientation,
                     stateSleepToken,
                     stateRestartId,
-                    waitSeconds,
+                    LONGPOLL_SECONDS,
                 )
                 lastContactAt = SystemClock.elapsedRealtime()
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
-                if (!networkAvailable()) {
-                    failingSince = 0L
-                    if (!playOffline(NETWORK_RETRY_MS, "Waiting for network…")) break
-                } else {
-                    if (!playOffline(POLL_MS, failureMessage(e))) break
-                }
+                if (!retryLater(e)) break
             }
         }
     }
@@ -1638,26 +1726,23 @@ class MainActivity : Activity() {
         else candidates[random.nextInt(candidates.size)]
     }
 
-    /** Show [ref]; [report] tells the server (skipped without a connection). */
-    private fun showImage(ref: ImageRef, report: Boolean = true): Boolean {
+    /** Show [ref] (slideshow thread); true once it is on screen. */
+    private fun showImage(ref: ImageRef): Boolean {
         if (ref.url == currentUrl) return true
         try {
             val bmp = bitmapCache.get(ref.url) ?: loadBitmap(ref).also {
                 bitmapCache.put(ref.url, it)
                 logMemory("Decoded ${it.width}x${it.height}")
             }
+            val backdrop = if (blurEnabled) blurredBackdrop(bmp) else null
             currentUrl = ref.url
             prefs.edit().putString(FramePrefs.LAST_SHOWN_URL, ref.url).apply()
-            val backdrop = if (blurEnabled) blurredBackdrop(bmp) else null
-            runOnUiThread { if (!browsing) transitionTo(bmp, backdrop, ref.url) }
-            if (report) {
-                try {
-                    client!!.reportShown(ref.id)
-                } catch (e: Exception) {
-                    // Reporting is best effort; keep showing the picture.
-                }
-            }
+            presentOnUi(bmp, backdrop, ref.url)
+            reportShownLater(ref.id)
             return true
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return false
         } catch (e: Exception) {
             setStatus("Could not load image: ${e.message}")
             return false
@@ -2003,7 +2088,10 @@ class MainActivity : Activity() {
         browseTag = null
         updateBackButton()
         browseResume.visibility = View.GONE
-        if (wasBrowsing) resumeSlideshow = true
+        if (wasBrowsing) {
+            resumeSlideshow = true
+            wakeSlides()
+        }
     }
 
     private fun openGrid() {
@@ -2258,6 +2346,9 @@ class MainActivity : Activity() {
             knownInterval = json.optInt("interval", 30)
             knownVersion = json.optLong("version", -1L)
             knownSingle = json.optJSONObject("single")?.let { ImageRef.fromJson(it) }
+            slideshow = Slideshow(
+                knownMode, knownSingle, knownPlaylist, knownRandom, knownInterval, knownVersion,
+            )
         } catch (e: Exception) {
             Log.w("MemoryLink", "Could not read image lists", e)
         }
@@ -2565,6 +2656,7 @@ class MainActivity : Activity() {
         panAnimator?.cancel()
         stopFrame()
         browseExecutor.shutdownNow()
+        reporter.shutdownNow()
         thumbExecutor.shutdownNow()
     }
 
@@ -2644,7 +2736,17 @@ class MainActivity : Activity() {
         /** Browsing ends after this long without a touch, while the server is reachable. */
         private const val BROWSE_TIMEOUT_MS = 3 * 60_000L
         private const val BROWSE_CHECK_MS = 5_000L
-        private const val BROWSE_POLL_SECONDS = 1
+        /** The slideshow thread looks again at least this often when idle... */
+        private const val SLIDE_IDLE_MS = 1_000L
+
+        /** ...and at most this long ahead of the next slide. */
+        private const val SLIDE_MAX_WAIT_MS = 5_000L
+
+        /** A photo that couldn't be shown is tried again after this long. */
+        private const val SLIDE_RETRY_MS = 2_000L
+
+        /** How long the slideshow waits for the UI thread to start a photo. */
+        private const val UI_WAIT_MS = 10_000L
         private const val BROWSE_TRANSITION_MS = 350L
         private const val BROWSE_LABEL_MS = 2_000L
         private const val CONTACT_FRESH_MS = 30_000L
