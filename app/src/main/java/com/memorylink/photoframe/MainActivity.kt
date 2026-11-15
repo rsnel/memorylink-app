@@ -1631,12 +1631,43 @@ class MainActivity : Activity() {
     private fun loadBitmap(ref: ImageRef): Bitmap {
         val file = imageFile(ref.url)
         if (file.isFile && file.length() > 0) {
-            BitmapFactory.decodeFile(file.path)?.let { return it }
+            decodeForScreen(file)?.let { return it }
             file.delete() // corrupt cached copy: fetch it again
         }
         ensureFile(ref)
-        return BitmapFactory.decodeFile(file.path)
-            ?: throw java.io.IOException("undecodable image")
+        return decodeForScreen(file) ?: throw java.io.IOException("undecodable image")
+    }
+
+    /**
+     * Decode a photo no larger than the screen needs. Photos are stored at
+     * their original size (a 12 MP photo is 48 MB decoded); the frame only
+     * needs enough to cover a square of the screen's longer side, so the
+     * photo stays sharp when the tablet turns and when it is zoomed to fill.
+     */
+    private fun decodeForScreen(file: File): Bitmap? {
+        val metrics = resources.displayMetrics
+        val side = maxOf(screenWidth, screenHeight, metrics.widthPixels, metrics.heightPixels)
+            .coerceAtLeast(1)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= side && bounds.outHeight / (sample * 2) >= side) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = BitmapFactory.decodeFile(file.path, options) ?: return null
+        val shorter = minOf(decoded.width, decoded.height)
+        if (shorter <= side * 5 / 4) return decoded
+        val scale = side.toFloat() / shorter
+        val scaled = Bitmap.createScaledBitmap(
+            decoded,
+            Math.round(decoded.width * scale).coerceAtLeast(1),
+            Math.round(decoded.height * scale).coerceAtLeast(1),
+            true,
+        )
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
     }
 
     private fun imageFile(url: String): File {
@@ -2112,7 +2143,7 @@ class MainActivity : Activity() {
         val file = imageFile(url)
         if (!file.isFile) return
         Thread {
-            val bmp = BitmapFactory.decodeFile(file.path) ?: return@Thread
+            val bmp = decodeForScreen(file) ?: return@Thread
             runOnUiThread {
                 if (screenUrl == null && frameView.visibility == View.VISIBLE) {
                     screenUrl = url
@@ -2256,14 +2287,23 @@ class MainActivity : Activity() {
         Transition3DView.Kind.CARD_STACK -> 1200L
     }
 
-    /** Picture of what the photo area shows now (backdrop and photo). */
-    private fun snapshotScreen(): Bitmap? {
+    // Two screen pictures, reused by every 3D transition (allocating new
+    // full-screen bitmaps for each one ran the frame out of memory).
+    private val snapshots = arrayOfNulls<Bitmap>(2)
+
+    /** Picture of what the photo area shows now (backdrop and photo), into slot [slot]. */
+    private fun snapshotScreen(slot: Int): Bitmap? {
         val w = frameView.width
         val h = frameView.height
         if (w <= 0 || h <= 0) return null
         return try {
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
-            val canvas = Canvas(bmp)
+            var bmp = snapshots[slot]
+            if (bmp == null || bmp.width != w || bmp.height != h) {
+                snapshots[slot] = null
+                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+                snapshots[slot] = bmp
+            }
+            val canvas = Canvas(bmp!!)
             canvas.drawColor(Color.BLACK)
             for (view in arrayOf(backdropView, backdropDim, frameView)) {
                 if (view.visibility != View.VISIBLE) continue
@@ -2296,12 +2336,12 @@ class MainActivity : Activity() {
         kind: Transition3DView.Kind,
     ): Boolean {
         panAnimator?.cancel()
-        val old = snapshotScreen() ?: return false
+        val old = snapshotScreen(0) ?: return false
         screenUrl = url
         if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
         frameView.setImageBitmap(bmp)
         if (displayMode == "pan") panMatrix(frameView, 0f)?.let { frameView.imageMatrix = it }
-        val new = snapshotScreen()
+        val new = snapshotScreen(1)
         if (new == null) {
             refreshPan()
             return true

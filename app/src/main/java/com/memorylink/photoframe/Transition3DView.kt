@@ -73,7 +73,7 @@ class Transition3DView @JvmOverloads constructor(
         images = arrayOf(old, new)
         if (kind == Kind.BLINDS) {
             slats = slatCount(old.width, old.height)
-            strips = arrayOf(slice(old, slats), slice(new, slats))
+            strips = arrayOf(slice(0, old, slats), slice(1, new, slats))
         } else {
             slats = 0
             strips = arrayOf(emptyArray(), emptyArray())
@@ -120,10 +120,30 @@ class Transition3DView @JvmOverloads constructor(
         done?.invoke()
     }
 
-    private fun slice(bmp: Bitmap, n: Int): Array<Bitmap> = Array(n) { i ->
-        val x0 = (i * bmp.width / n.toFloat()).roundToInt()
-        val x1 = ((i + 1) * bmp.width / n.toFloat()).roundToInt()
-        Bitmap.createBitmap(bmp, x0, 0, max(1, x1 - x0), bmp.height)
+    // Slat bitmaps, reused from one BLINDS transition to the next.
+    private val stripPool: Array<Array<Bitmap>> = arrayOf(emptyArray(), emptyArray())
+
+    /** Cut [bmp] into [n] vertical slats, drawn into the reused bitmaps of [slot]. */
+    private fun slice(slot: Int, bmp: Bitmap, n: Int): Array<Bitmap> {
+        var pool = stripPool[slot]
+        val fits = pool.size == n && pool.withIndex().all { (i, strip) ->
+            val x0 = (i * bmp.width / n.toFloat()).roundToInt()
+            val x1 = ((i + 1) * bmp.width / n.toFloat()).roundToInt()
+            strip.width == max(1, x1 - x0) && strip.height == bmp.height
+        }
+        if (!fits) {
+            pool = Array(n) { i ->
+                val x0 = (i * bmp.width / n.toFloat()).roundToInt()
+                val x1 = ((i + 1) * bmp.width / n.toFloat()).roundToInt()
+                Bitmap.createBitmap(max(1, x1 - x0), bmp.height, Bitmap.Config.RGB_565)
+            }
+            stripPool[slot] = pool
+        }
+        for (i in 0 until n) {
+            val x0 = (i * bmp.width / n.toFloat()).roundToInt()
+            Canvas(pool[i]).drawBitmap(bmp, -x0.toFloat(), 0f, null)
+        }
+        return pool
     }
 
     override fun onDraw(canvas: Canvas) {
