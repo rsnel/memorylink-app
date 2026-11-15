@@ -1668,14 +1668,30 @@ class MainActivity : Activity() {
             return
         }
         if (address.isNullOrBlank()) return
-        val name = try {
-            device.name
-        } catch (e: SecurityException) {
-            null
-        }
+        val rssi = result.rssi
         val previous = bluetoothResults[address]
-        bluetoothResults[address] = BluetoothSeen(address, name ?: previous?.name, result.rssi)
+        bluetoothResults[address] = BluetoothSeen(address, previous?.name, rssi)
+        // Looking up the name asks the Bluetooth service, which can take
+        // seconds; do it off the UI thread, once per device per scan.
+        if (previous == null) {
+            bluetoothNameExecutor.execute {
+                val name = try {
+                    device.name
+                } catch (e: Exception) {
+                    null
+                }
+                if (name != null) {
+                    runOnUiThread {
+                        bluetoothResults[address]?.let {
+                            bluetoothResults[address] = BluetoothSeen(address, name, it.rssi)
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    private val bluetoothNameExecutor = Executors.newSingleThreadExecutor()
 
     private fun finishBluetoothScan() {
         if (!bluetoothScanning) return
@@ -2426,22 +2442,38 @@ class MainActivity : Activity() {
 
     // Two screen pictures, reused by every 3D transition (allocating new
     // full-screen bitmaps for each one ran the frame out of memory).
-    private val snapshots = arrayOfNulls<Bitmap>(2)
+    // Two pairs, used in turn, so a picture is never redrawn while the
+    // previous transition may still be drawing it.
+    private val snapshots = arrayOfNulls<Bitmap>(4)
+    private var snapshotPair = 0
 
-    /** Picture of what the photo area shows now (backdrop and photo), into slot [slot]. */
+    // 3D transitions that ran far slower than planned (the tablet can't keep
+    // up); after two, the frame uses the flat transitions for a while.
+    private var slow3DCount = 0
+    private var no3DUntil = 0L
+
+    /**
+     * Picture of what the photo area shows now (backdrop and photo), into slot
+     * [slot]. Taken at a reduced size (at most SNAPSHOT_MAX_SIDE), which is
+     * plenty while it moves and keeps the work small on older tablets.
+     */
     private fun snapshotScreen(slot: Int): Bitmap? {
         val w = frameView.width
         val h = frameView.height
         if (w <= 0 || h <= 0) return null
+        val scale = minOf(1f, SNAPSHOT_MAX_SIDE.toFloat() / maxOf(w, h))
+        val sw = Math.round(w * scale).coerceAtLeast(1)
+        val sh = Math.round(h * scale).coerceAtLeast(1)
         return try {
             var bmp = snapshots[slot]
-            if (bmp == null || bmp.width != w || bmp.height != h) {
+            if (bmp == null || bmp.width != sw || bmp.height != sh) {
                 snapshots[slot] = null
-                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+                bmp = Bitmap.createBitmap(sw, sh, Bitmap.Config.RGB_565)
                 snapshots[slot] = bmp
             }
             val canvas = Canvas(bmp!!)
             canvas.drawColor(Color.BLACK)
+            canvas.scale(sw.toFloat() / w, sh.toFloat() / h)
             for (view in arrayOf(backdropView, backdropDim, frameView)) {
                 if (view.visibility != View.VISIBLE) continue
                 if (view.alpha < 1f) {
@@ -2473,12 +2505,14 @@ class MainActivity : Activity() {
         kind: Transition3DView.Kind,
     ): Boolean {
         panAnimator?.cancel()
-        val old = snapshotScreen(0) ?: return false
+        val prepStart = SystemClock.elapsedRealtime()
+        snapshotPair = 1 - snapshotPair
+        val old = snapshotScreen(2 * snapshotPair) ?: return false
         screenUrl = url
         if (blurEnabled) setBackdrop(backdrop) else setBackdrop(null)
         frameView.setImageBitmap(bmp)
         if (displayMode == "pan") panMatrix(frameView, 0f)?.let { frameView.imageMatrix = it }
-        val new = snapshotScreen(1)
+        val new = snapshotScreen(2 * snapshotPair + 1)
         if (new == null) {
             refreshPan()
             return true
@@ -2488,17 +2522,51 @@ class MainActivity : Activity() {
             Transition3DView.Kind.LEAPFROG, Transition3DView.Kind.FALL_AWAY -> 1
             else -> if (random.nextBoolean()) 1 else -1
         }
-        transition3D.start(kind, old, new, duration3D(kind), direction) { refreshPan() }
+        val prepMs = SystemClock.elapsedRealtime() - prepStart
+        val planned = duration3D(kind)
+        transition3D.start(kind, old, new, planned, direction) { tookMs ->
+            refreshPan()
+            note3DSpeed(kind, prepMs, tookMs, planned)
+        }
         return true
+    }
+
+    /**
+     * Keep an eye on how long 3D transitions really take. Some tablets can't
+     * keep up and stall for many seconds; after two such transitions the frame
+     * uses the flat transitions for an hour.
+     */
+    private fun note3DSpeed(kind: Transition3DView.Kind, prepMs: Long, tookMs: Long, plannedMs: Long) {
+        val slow = prepMs > SLOW_3D_PREP_MS || tookMs > plannedMs * 5 / 2 + 500L
+        if (!slow) {
+            slow3DCount = 0
+            return
+        }
+        slow3DCount++
+        Log.w(
+            "MemoryLink",
+            "3D transition $kind slow: preparing $prepMs ms, playing $tookMs ms (planned $plannedMs)",
+        )
+        if (slow3DCount >= 2) {
+            slow3DCount = 0
+            no3DUntil = SystemClock.elapsedRealtime() + NO_3D_MS
+            Log.w("MemoryLink", "This tablet can't keep up with 3D transitions; flat ones for an hour")
+        }
     }
 
     /** Effects enabled in the web UI; an empty selection means all of them. */
     private fun transitionKinds(): List<Transition> {
         val names = enabledTransitions
-        if (names.isEmpty()) return Transition.values().toList()
-        val allowed = names.toSet()
-        return Transition.values().filter { it.name in allowed }
-            .ifEmpty { Transition.values().toList() }
+        val all = Transition.values().toList()
+        var kinds = if (names.isEmpty()) all else {
+            val allowed = names.toSet()
+            all.filter { it.name in allowed }.ifEmpty { all }
+        }
+        if (SystemClock.elapsedRealtime() < no3DUntil) {
+            kinds = kinds.filter { kind3D(it) == null }
+                .ifEmpty { all.filter { kind3D(it) == null } }
+        }
+        return kinds
     }
 
     /** Animate the new bitmap in over the old one with a random effect. */
@@ -2656,6 +2724,7 @@ class MainActivity : Activity() {
         panAnimator?.cancel()
         stopFrame()
         browseExecutor.shutdownNow()
+        bluetoothNameExecutor.shutdownNow()
         reporter.shutdownNow()
         thumbExecutor.shutdownNow()
     }
@@ -2707,6 +2776,15 @@ class MainActivity : Activity() {
 
         /** Photos leaving the cache are recycled this long after (past any transition). */
         private const val RELEASE_DELAY_MS = 4_000L
+
+        /** Longer side of the screen pictures used by 3D transitions. */
+        private const val SNAPSHOT_MAX_SIDE = 1024
+
+        /** Preparing a 3D transition longer than this counts as slow. */
+        private const val SLOW_3D_PREP_MS = 1_000L
+
+        /** How long the frame keeps to flat transitions after slow 3D ones. */
+        private const val NO_3D_MS = 60 * 60_000L
 
         /** How often the frame checks its sleep schedule. */
         private const val SLEEP_CHECK_MS = 20_000L

@@ -53,7 +53,17 @@ class Transition3DView @JvmOverloads constructor(
     private var strips: Array<Array<Bitmap>> = arrayOf(emptyArray(), emptyArray())
     private var slats = 0
     private var animator: ValueAnimator? = null
-    private var onEnd: (() -> Unit)? = null
+    private var onEnd: ((Long) -> Unit)? = null
+    private var startedAt = 0L
+
+    // One colour filter per shade, made once (not a new object every frame).
+    private val shadeFilters = arrayOfNulls<LightingColorFilter>(256)
+
+    private fun shadeFilter(light: Int): LightingColorFilter? {
+        if (light >= 255) return null
+        return shadeFilters[light] ?: LightingColorFilter(Color.rgb(light, light, light), 0)
+            .also { shadeFilters[light] = it }
+    }
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val matrix = Matrix()
@@ -64,9 +74,10 @@ class Transition3DView @JvmOverloads constructor(
 
     /**
      * Play [kind] from [old] to [new] (both screen-sized), then hide and call
-     * [done]. [direction] picks one of the variants (left/right, up/down).
+     * [done] with how long it really took (ms). [direction] picks one of the
+     * variants (left/right, up/down).
      */
-    fun start(kind: Kind, old: Bitmap, new: Bitmap, durationMs: Long, direction: Int, done: () -> Unit) {
+    fun start(kind: Kind, old: Bitmap, new: Bitmap, durationMs: Long, direction: Int, done: (Long) -> Unit) {
         cancel()
         this.kind = kind
         this.direction = direction
@@ -79,6 +90,7 @@ class Transition3DView @JvmOverloads constructor(
             strips = arrayOf(emptyArray(), emptyArray())
         }
         onEnd = done
+        startedAt = android.os.SystemClock.elapsedRealtime()
         progress = 0f
         visibility = VISIBLE
         val a = ValueAnimator.ofFloat(0f, 1f)
@@ -117,7 +129,7 @@ class Transition3DView @JvmOverloads constructor(
         strips = arrayOf(emptyArray(), emptyArray())
         val done = onEnd
         onEnd = null
-        done?.invoke()
+        done?.invoke(android.os.SystemClock.elapsedRealtime() - startedAt)
     }
 
     // Slat bitmaps, reused from one BLINDS transition to the next.
@@ -165,9 +177,7 @@ class Transition3DView @JvmOverloads constructor(
             val scaleY = height / h
             if (scaleX != 1f || scaleY != 1f) matrix.postScale(scaleX, scaleY)
             val light = ((1f - card.shade) * 255f).roundToInt().coerceIn(0, 255)
-            paint.colorFilter = if (light < 255) {
-                LightingColorFilter(Color.rgb(light, light, light), 0)
-            } else null
+            paint.colorFilter = shadeFilter(light)
             paint.alpha = (card.alpha * 255f).roundToInt().coerceIn(0, 255)
             canvas.drawBitmap(bmp, matrix, paint)
         }
