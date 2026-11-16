@@ -40,7 +40,7 @@ class Transition3DView @JvmOverloads constructor(
     private class Card(
         val image: Int,       // 0 = old screen, 1 = new screen
         val strip: Int,       // slat index for BLINDS, else -1
-        val pts: FloatArray,  // projected corners: TL, TR, BR, BL
+        val pts: FloatArray,  // projected corners TL, TR, BR, BL, then the 3x3 projection (NaN: unusable)
         val depth: Float,
         val shade: Float,     // 0 = as is, 1 = black
         val alpha: Float,
@@ -67,7 +67,6 @@ class Transition3DView @JvmOverloads constructor(
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val matrix = Matrix()
-    private val src = FloatArray(8)
 
     val running: Boolean
         get() = animator != null
@@ -158,6 +157,8 @@ class Transition3DView @JvmOverloads constructor(
         return pool
     }
 
+    private val hvals = FloatArray(9)
+
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.BLACK)
         val old = images[0] ?: return
@@ -167,11 +168,15 @@ class Transition3DView @JvmOverloads constructor(
             val bmp = if (card.strip >= 0) strips[card.image].getOrNull(card.strip)
             else images[card.image]
             if (bmp == null || card.alpha <= 0f) continue
-            src[0] = 0f; src[1] = 0f
-            src[2] = bmp.width.toFloat(); src[3] = 0f
-            src[4] = bmp.width.toFloat(); src[5] = bmp.height.toFloat()
-            src[6] = 0f; src[7] = bmp.height.toFloat()
-            if (!matrix.setPolyToPoly(src, 0, card.pts, 0, 4)) continue
+            // Skip cards seen (almost) edge-on or reaching behind the viewer:
+            // they show at most a sliver, and the projection of such a card
+            // is nearly singular, which some GPU drivers handle very badly.
+            if (card.pts[8].isNaN() || quadArea(card.pts) < w * h * MIN_AREA) continue
+            // The exact projection of the card, built from its position in 3D
+            // (not fitted to the four corners, which fails near edge-on).
+            for (i in 0 until 9) hvals[i] = card.pts[8 + i]
+            matrix.setValues(hvals)
+            matrix.preScale(1f / bmp.width, 1f / bmp.height)
             // Scale the screenshot to this view if it was taken at another size.
             val scaleX = width / w
             val scaleY = height / h
@@ -343,8 +348,10 @@ class Transition3DView @JvmOverloads constructor(
             val ax = Math.toRadians(rx.toDouble())
             val ay = Math.toRadians(ry.toDouble())
             val az = Math.toRadians(rz.toDouble())
-            val out = FloatArray(8)
+            val out = FloatArray(17)
             var depth = 0.0
+            val p3 = DoubleArray(12)
+            var behind = false
             val xs = floatArrayOf(rect[0], rect[2], rect[2], rect[0])
             val ys = floatArrayOf(rect[1], rect[1], rect[3], rect[3])
             for (i in 0 until 4) {
@@ -363,12 +370,44 @@ class Transition3DView @JvmOverloads constructor(
                 x += px + tx
                 y += py + ty
                 z += pz + tz
+                p3[3 * i] = x; p3[3 * i + 1] = y; p3[3 * i + 2] = z
+                if (d + z < d * 0.05) behind = true
                 val s = d / max(d + z, d * 0.05)
                 out[2 * i] = (cx + (x - cx) * s).toFloat()
                 out[2 * i + 1] = (cy + (y - cy) * s).toFloat()
                 depth += z / 4
             }
+            // Projection from the card's own coordinates (u, v in 0..1) to the
+            // screen: point P = O + u*U + v*V, screen x = (d*Px + cx*Pz)/(d + Pz),
+            // likewise y. That is a 3x3 matrix, normalised so the last entry is 1.
+            if (behind) {
+                out[8] = Float.NaN
+            } else {
+                val ox = p3[0]; val oy = p3[1]; val oz = p3[2]
+                val ux = p3[3] - ox; val uy = p3[4] - oy; val uz = p3[5] - oz
+                val vx = p3[9] - ox; val vy = p3[10] - oy; val vz = p3[11] - oz
+                val k = 1.0 / (d + oz)
+                val m = doubleArrayOf(
+                    d * ux + cx * uz, d * vx + cx * vz, d * ox + cx * oz,
+                    d * uy + cy * uz, d * vy + cy * vz, d * oy + cy * oz,
+                    uz, vz, d + oz,
+                )
+                for (i in 0 until 9) out[8 + i] = (m[i] * k).toFloat()
+            }
             return Pair(out, depth.toFloat())
+        }
+
+        /** Smallest part of the screen a card must cover to be drawn. */
+        private const val MIN_AREA = 0.002f
+
+        /** Area of the quadrilateral given by the first 8 values (4 corners). */
+        private fun quadArea(p: FloatArray): Float {
+            var a = 0f
+            for (i in 0 until 4) {
+                val j = (i + 1) % 4
+                a += p[2 * i] * p[2 * j + 1] - p[2 * j] * p[2 * i + 1]
+            }
+            return kotlin.math.abs(a) / 2f
         }
     }
 }
