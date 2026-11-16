@@ -19,6 +19,7 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Draws the 3D transitions: the old and the new screen (two screenshots) as
@@ -380,12 +381,12 @@ class Transition3DView @JvmOverloads constructor(
             // Projection from the card's own coordinates (u, v in 0..1) to the
             // screen: point P = O + u*U + v*V, screen x = (d*Px + cx*Pz)/(d + Pz),
             // likewise y. That is a 3x3 matrix, normalised so the last entry is 1.
-            if (behind) {
+            val ox = p3[0]; val oy = p3[1]; val oz = p3[2]
+            val ux = p3[3] - ox; val uy = p3[4] - oy; val uz = p3[5] - oz
+            val vx = p3[9] - ox; val vy = p3[10] - oy; val vz = p3[11] - oz
+            if (behind || nearlyEdgeOn(ox, oy, oz, ux, uy, uz, vx, vy, vz, cx.toDouble(), cy.toDouble(), d.toDouble())) {
                 out[8] = Float.NaN
             } else {
-                val ox = p3[0]; val oy = p3[1]; val oz = p3[2]
-                val ux = p3[3] - ox; val uy = p3[4] - oy; val uz = p3[5] - oz
-                val vx = p3[9] - ox; val vy = p3[10] - oy; val vz = p3[11] - oz
                 val k = 1.0 / (d + oz)
                 val m = doubleArrayOf(
                     d * ux + cx * uz, d * vx + cx * vz, d * ox + cx * oz,
@@ -395,6 +396,36 @@ class Transition3DView @JvmOverloads constructor(
                 for (i in 0 until 9) out[8 + i] = (m[i] * k).toFloat()
             }
             return Pair(out, depth.toFloat())
+        }
+
+        /**
+         * Cards seen within this angle of edge-on are not drawn: some GPU
+         * drivers (Mali on the Galaxy Tab S2) hang for many seconds on them.
+         * It shows as a blink of black for a few frames mid-turn.
+         */
+        private const val EDGE_ON_DEGREES = 10.0
+        private val EDGE_ON_SIN = sin(Math.toRadians(EDGE_ON_DEGREES))
+
+        /**
+         * True if the card O + u*U + v*V is seen from the viewer at
+         * (cx, cy, -d) at less than EDGE_ON_DEGREES from edge-on.
+         */
+        private fun nearlyEdgeOn(
+            ox: Double, oy: Double, oz: Double,
+            ux: Double, uy: Double, uz: Double,
+            vx: Double, vy: Double, vz: Double,
+            cx: Double, cy: Double, d: Double,
+        ): Boolean {
+            val nx = uy * vz - uz * vy
+            val ny = uz * vx - ux * vz
+            val nz = ux * vy - uy * vx
+            val lx = ox + (ux + vx) / 2 - cx
+            val ly = oy + (uy + vy) / 2 - cy
+            val lz = oz + (uz + vz) / 2 + d
+            val nn = sqrt(nx * nx + ny * ny + nz * nz)
+            val ll = sqrt(lx * lx + ly * ly + lz * lz)
+            if (nn == 0.0 || ll == 0.0) return true
+            return abs(nx * lx + ny * ly + nz * lz) / (nn * ll) < EDGE_ON_SIN
         }
 
         /** Smallest part of the screen a card must cover to be drawn. */
